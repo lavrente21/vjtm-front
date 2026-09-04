@@ -1,0 +1,172 @@
+:root{
+    --paper:#E8E6DC;
+    --paper-light:#FBFAF6;
+    --paper-dark:#DCD9CC;
+    --ink:#1F2A24;
+    --ink-soft:#5B6660;
+    --rule:#C9C2AC;
+    --stamp-green:#2F6B4F;
+    --stamp-green-bg:#E4EEE8;
+    --stamp-red:#A3392F;
+    --stamp-red-bg:#F3E4E1;
+    --stamp-amber:#A87A2E;
+    --stamp-amber-bg:#F1E7D3;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'Inter',sans-serif;
+    font-size:14px;
+    line-height:1.5;
+  }
+  h1,h2,h3,.serif{font-family:'Roboto Slab',serif;}
+  .num,input,.mono,table{font-family:'IBM Plex Mono',monospace;}
+  ::selection{background:var(--ink);color:var(--paper-light);}
+
+  #app{max-width:1100px;margin:0 auto;padding:18px 16px 60px;}
+
+  /* ---------- Header / Nav ---------- */
+  .masthead{
+    display:flex;align-items:baseline;justify-content:space-between;
+    border-bottom:3px double var(--ink);
+    padding-bottom:10px;margin-bottom:14px;flex-wrap:wrap;gap:8px;
+  }
+  .masthead .title{font-family:'Roboto Slab',serif;font-weight:700;font-size:22px;letter-spacing:.2px;}
+  .masthead .sub{color:var(--ink-soft);font-size:12px;margin-top:2px;}  .who{text-align:right;font-size:12px;color:var(--ink-soft);}
+  .who b{color:var(--ink);font-family:'IBM Plex Mono',monospace;}
+  .logout-link{color:var(--stamp-red);cursor:pointer;text-decoration:underline;font-size:12px;}
+
+  .tabs{display:flex;gap:2px;border-bottom:1px solid var(--rule);margin-bottom:18px;
+    overflow-x:auto; -webkit-overflow-scrolling:touch; flex-wrap:nowrap;
+    position:sticky; top:0; background:var(--paper); z-index:10; scrollbar-width:thin;}
+  .tab{
+    padding:11px 14px;cursor:pointer;font-size:13px;font-weight:600;color:var(--ink-soft);
+    border-bottom:2px solid transparent; flex:0 0 auto; white-space:nowrap;
+  }
+  .tab.active{color:var(--ink);border-bottom:2px solid var(--ink);}
+  .tab:hover{color:var(--ink);}
+
+  /* ---------- Ledger sheet ---------- */
+  .sheet{
+    background:var(--paper-light);
+    border:1px solid var(--rule);
+    padding:20px 22px;margin-bottom:18px;
+    position:relative;
+  }
+  .sheet::before{
+    content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--ink);opacity:.06;
+  }
+  .sheet h2{font-size:16px;margin:0 0 4px;}
+  .sheet .hint{color:var(--ink-soft);font-size:12.5px;margin:0 0 14px;}
+  .section-label{
+    font-family:'Roboto Slab',serif;font-weight:600;font-size:13px;
+    border-bottom:1px solid var(--rule);padding-bottom:6px;margin:22px 0 10px;
+    display:flex;align-items:center;justify-content:space-between;
+  }
+  .section-label:first-of-type{margin-top:0;}
+
+  .table-scroll{overflow-x:auto; -webkit-overflow-scrolling:touch; margin:0 -2px;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{
+    text-align:left;font-family:'Inter',sans-serif;font-weight:600;font-size:11px;
+    color:var(--ink-soft);text-transform:none;border-bottom:1px solid var(--rule);
+    padding:6px 8px;
+  }
+  td{padding:7px 8px;border-bottom:1px solid var(--rule);vertical-align:middle;}
+  tr:last-child td{border-bottom:1px solid var(--rule);}
+  .num-cell{text-align:right;font-variant-numeric:tabular-nums;}
+
+  input[type=text],input[type=number],input[type=password],input[type=date],input[type=month],select,textarea{
+    font-family:'IBM Plex Mono',monospace;font-size:13px;
+    border:1px solid var(--rule);background:#fff;color:var(--ink);
+    padding:6px 8px;border-radius:2px;width:100%;min-height:38px;
+  }
+  input:focus,select:focus,textarea:focus{outline:2px solid var(--ink);outline-offset:0;}
+  label.field{display:block;font-size:11.5px;color:var(--ink-soft);margin-bottom:4px;font-family:'Inter',sans-serif;}
+  .field-wrap{margin-bottom:12px;}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
+  .row4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;}
+  @media(max-width:640px){.row2,.row3,.row4{grid-template-columns:1fr;}}
+
+  button{
+    font-family:'Inter',sans-serif;font-weight:600;font-size:13px;
+    border:1px solid var(--ink);background:var(--ink);color:var(--paper-light);
+    padding:9px 16px;cursor:pointer;border-radius:2px;min-height:38px;
+  }
+  button:hover{opacity:.88;}
+  button.secondary{background:transparent;color:var(--ink);}
+  button.danger{background:var(--stamp-red);border-color:var(--stamp-red);}
+  button.ghost{background:transparent;border:1px solid var(--rule);color:var(--ink-soft);font-weight:500;}
+  button:disabled{opacity:.4;cursor:not-allowed;}
+  button.small{padding:5px 10px;font-size:12px;min-height:32px;}
+
+  .stamp{
+    display:inline-block;font-family:'Roboto Slab',serif;font-weight:700;font-size:11px;
+    padding:3px 9px;border:2px solid currentColor;border-radius:3px;letter-spacing:.4px;
+    transform:rotate(-2deg);
+  }
+  .stamp.ok{color:var(--stamp-green);background:var(--stamp-green-bg);}
+  .stamp.falta{color:var(--stamp-red);background:var(--stamp-red-bg);}
+  .stamp.mais{color:var(--stamp-amber);background:var(--stamp-amber-bg);}
+
+  .banner{padding:10px 12px;border-left:3px solid var(--ink);background:var(--paper-dark);font-size:13px;margin-bottom:14px;}
+  .banner.falta{border-color:var(--stamp-red);background:var(--stamp-red-bg);color:var(--stamp-red);}
+  .banner.mais{border-color:var(--stamp-amber);background:var(--stamp-amber-bg);color:var(--stamp-amber);}
+  .banner.ok{border-color:var(--stamp-green);background:var(--stamp-green-bg);color:var(--stamp-green);}
+
+  .store-card{border:1px solid var(--rule);background:var(--paper-light);padding:14px 16px;margin-bottom:12px;}
+  .store-card .head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+  .store-card .head .name{font-family:'Roboto Slab',serif;font-weight:600;font-size:14.5px;}
+  .missing-card{border:1px dashed var(--stamp-red);background:var(--stamp-red-bg);padding:12px 16px;margin-bottom:10px;color:var(--stamp-red);font-size:13px;}
+
+  .obs-auto{color:var(--stamp-red);font-size:12.5px;padding:3px 0;}
+  .obs-auto.mais{color:var(--stamp-amber);}
+
+  .login-wrap{max-width:380px;margin:60px auto 0;}
+  .login-wrap .sheet{padding:28px 26px;}
+  .brand{text-align:center;margin-bottom:18px;}
+  .brand .mark{font-family:'Roboto Slab',serif;font-weight:700;font-size:26px;}
+  .brand .tag{font-size:12px;color:var(--ink-soft);margin-top:2px;}
+
+  .kv{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dotted var(--rule);font-size:13px;}
+  .kv b{font-family:'IBM Plex Mono',monospace;}
+
+  .badge{font-size:10.5px;padding:2px 7px;border-radius:10px;background:var(--paper-dark);color:var(--ink-soft);font-family:'Inter',sans-serif;font-weight:600;}
+  .badge.role-admin{background:var(--ink);color:var(--paper-light);}
+  .badge.role-supervisor{background:var(--stamp-amber-bg);color:var(--stamp-amber);}
+  .badge.role-funcionario{background:var(--stamp-green-bg);color:var(--stamp-green);}
+  .badge.role-contabilista{background:#DEE6E8;color:#3A5F66;}
+
+  .empty{text-align:center;padding:40px 10px;color:var(--ink-soft);font-size:13px;}
+  .muted{color:var(--ink-soft);}
+  .small-note{font-size:11.5px;color:var(--ink-soft);margin-top:4px;}
+  .divider{border:none;border-top:1px solid var(--rule);margin:16px 0;}
+  .chip-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;}
+  .link-btn{background:none;border:none;color:var(--ink);text-decoration:underline;font-size:12.5px;padding:0;font-weight:500;cursor:pointer;}
+  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--paper-light);
+    padding:10px 18px;border-radius:3px;font-size:13px;z-index:50;}
+  .grid-months{display:flex;gap:8px;align-items:center;margin-bottom:16px;}
+
+  /* ---------- Telemóvel: nunca deixar o layout quebrar, tudo fácil de tocar ---------- */
+  @media(max-width:640px){
+    #app{padding:12px 10px 50px;}
+    .sheet{padding:16px 14px;}
+    /* impede o Safari/iOS de dar zoom automático ao tocar num campo com letra pequena */
+    input[type=text],input[type=number],input[type=password],input[type=date],input[type=month],select,textarea{
+      font-size:16px; min-height:44px;
+    }
+    button{min-height:44px; padding:10px 14px;}
+    button.small{min-height:38px;}
+    .masthead .title{font-size:19px;}
+    .tab{padding:12px 12px; font-size:12.5px;}
+    .row4, .row3{gap:10px;}
+    table{font-size:12.5px;}
+    th,td{padding:6px 6px;}
+    .kv{flex-wrap:wrap; gap:2px 10px;}
+    .store-card .head{flex-wrap:wrap; gap:6px;}
+    .login-wrap{margin-top:24px;}
+    .login-wrap .sheet{padding:22px 18px;}
+  }

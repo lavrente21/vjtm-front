@@ -1,0 +1,1304 @@
+<!DOCTYPE html>
+<html lang="pt-AO">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Livro de Caixa — Sistema de Relatórios</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Slab:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+/* ============================================================
+   ESTADO GLOBAL
+============================================================ */
+const S = {
+  users: [],
+  catalog: [],
+  session: null,        // {username, role, store}
+  view: 'login',
+  draftReport: null,     // relatório em edição
+  selectedDate: todayStr(),
+  selectedMonth: todayStr().slice(0,7),
+  loaded: false,
+};
+
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function nowIso(){ return new Date().toISOString(); }
+function fmt(n){
+  n = Number(n)||0;
+  return n.toLocaleString('pt-PT',{maximumFractionDigits:2});
+}
+function uid(){ return Math.random().toString(36).slice(2,10); }
+
+/* ============================================================
+   CLIENTE DA API (backend Render + Supabase)
+   Troca este valor pelo URL do teu serviço no Render depois do deploy.
+============================================================ */
+const API_BASE_URL = 'https://SEU-BACKEND.onrender.com';
+
+async function api(method, path, body){
+  const headers = {'Content-Type':'application/json'};
+  if(S.token) headers['Authorization'] = 'Bearer '+S.token;
+  const res = await fetch(API_BASE_URL+path, {
+    method, headers, body: body!==undefined ? JSON.stringify(body) : undefined,
+  });
+  let data = null;
+  try{ data = await res.json(); }catch(e){}
+  if(!res.ok){
+    const msg = (data && data.error) ? data.error : ('Erro '+res.status);
+    if(res.status===401){ doLogout(); }
+    throw new Error(msg);
+  }
+  return data;
+}
+
+/* ============================================================
+   ACESSO A DADOS (via API)
+============================================================ */
+async function loadUsers(){
+  try{ S.users = await api('GET','/users'); }catch(e){ S.users = []; }
+}
+async function loadCatalog(){
+  try{ S.catalog = await api('GET','/catalog'); }catch(e){ S.catalog = []; }
+}
+async function getReport(date, store){
+  try{ return await api('GET', `/reports/draft/${date}/${encodeURIComponent(store)}`); }
+  catch(e){ return null; }
+}
+async function saveReport(rep){
+  try{
+    const saved = await api('PUT', `/reports/${rep.date}/${encodeURIComponent(rep.store)}`, {
+      produtos: rep.produtos, saidas: rep.saidas, bfa: rep.bfa, obs: rep.obs,
+    });
+    rep.id = saved.id; // guarda o id devolvido pelo servidor, precisamos dele para pedidos de edição
+    return saved;
+  }catch(e){ toast(e.message); return null; }
+}
+async function listReportsForDate(date){
+  try{ return await api('GET', `/reports/day/${date}`); }catch(e){ return []; }
+}
+async function listReportsForMonth(month){
+  try{ return await api('GET', `/reports/month/${month}`); }catch(e){ return []; }
+}
+async function getLiveStock(store){
+  try{
+    const r = await api('GET', `/stock/${encodeURIComponent(store)}`);
+    return r; // { store, base, linhas } — já vem pronto do servidor
+  }catch(e){ return null; }
+}
+
+/* ============================================================
+   BOOT
+============================================================ */
+async function boot(){
+  S.loaded = true;
+  const savedSession = sessionStorage.getItem('ledger_session');
+  const savedToken = sessionStorage.getItem('ledger_token');
+  if(savedSession && savedToken){
+    try{
+      S.session = JSON.parse(savedSession);
+      S.token = savedToken;
+      S.view = S.session.role==='funcionario' ? 'novo-relatorio' : (S.session.role==='contabilista' ? 'contabilidade' : 'relatorios-dia');
+      await loadCatalog();
+    }catch(e){}
+  }
+  render();
+}
+boot();
+
+/* ============================================================
+   AUTH
+============================================================ */
+async function doLogin(username, password){
+  try{
+    const r = await api('POST', '/auth/login', {username, password});
+    S.token = r.token;
+    S.session = {username:r.user.username, role:r.user.role, store:r.user.store};
+    sessionStorage.setItem('ledger_session', JSON.stringify(S.session));
+    sessionStorage.setItem('ledger_token', S.token);
+    if(r.user.mustChangePassword){ S.view='trocar-password'; render(); return; }
+    await loadCatalog();
+    S.view = r.user.role==='funcionario' ? 'novo-relatorio' : (r.user.role==='contabilista' ? 'contabilidade' : 'relatorios-dia');
+    render();
+  }catch(e){
+    document.getElementById('login-err').textContent = e.message;
+  }
+}
+function doLogout(){
+  S.session=null; S.token=null;
+  sessionStorage.removeItem('ledger_session'); sessionStorage.removeItem('ledger_token');
+  S.view='login'; render();
+}
+
+/* ============================================================
+   TOAST
+============================================================ */
+function toast(msg){
+  const el = document.createElement('div');
+  el.className='toast'; el.textContent=msg;
+  document.body.appendChild(el);
+  setTimeout(()=>el.remove(),2600);
+}
+
+/* ============================================================
+   RENDER ROOT
+============================================================ */
+function render(){
+  const app = document.getElementById('app');
+  if(!S.loaded){ app.innerHTML = '<div class="empty">A carregar…</div>'; return; }
+  if(!S.session){ app.innerHTML = viewLogin(); attachLoginHandlers(); return; }
+  if(S.view==='trocar-password'){ app.innerHTML = viewTrocarPassword(); attachTrocarPasswordHandlers(); return; }
+
+  app.innerHTML = viewShell();
+  attachShellHandlers();
+}
+
+/* ============================================================
+   VIEW: LOGIN
+============================================================ */
+function viewLogin(){
+  return `
+  <div class="login-wrap">
+    <div class="brand">
+      <div class="mark">Livro de Caixa</div>
+      <div class="tag">Relatório diário · multi-loja · agente bancário BFA</div>
+    </div>
+    <div class="sheet">
+      <h2>Entrar</h2>
+      <p class="hint">Usa o utilizador e password da tua loja.</p>
+      <div class="field-wrap">
+        <label class="field">Utilizador</label>
+        <input type="text" id="login-user" autocomplete="username">
+      </div>
+      <div class="field-wrap">
+        <label class="field">Password</label>
+        <input type="password" id="login-pass" autocomplete="current-password">
+      </div>
+      <div id="login-err" style="color:var(--stamp-red);font-size:12.5px;margin-bottom:10px;"></div>
+      <button id="login-btn" style="width:100%;">Entrar</button>
+      <p class="small-note" style="margin-top:14px;">Acesso demonstrativo · utilizador: <b>admin</b> · password: <b>admin123</b></p>
+    </div>
+  </div>`;
+}
+function attachLoginHandlers(){
+  const btn = document.getElementById('login-btn');
+  const go = ()=>doLogin(document.getElementById('login-user').value.trim(), document.getElementById('login-pass').value);
+  btn.onclick = go;
+  document.getElementById('login-pass').addEventListener('keydown', e=>{ if(e.key==='Enter') go(); });
+}
+
+/* ============================================================
+   VIEW: TROCAR PASSWORD (primeiro acesso)
+============================================================ */
+function viewTrocarPassword(){
+  return `
+  <div class="login-wrap">
+    <div class="sheet">
+      <h2>Primeiro acesso — troca a tua password</h2>
+      <p class="hint">Por segurança, define uma password nova antes de continuar.</p>
+      <div class="field-wrap">
+        <label class="field">Nova password</label>
+        <input type="password" id="np1">
+      </div>
+      <div class="field-wrap">
+        <label class="field">Confirmar nova password</label>
+        <input type="password" id="np2">
+      </div>
+      <div id="np-err" style="color:var(--stamp-red);font-size:12.5px;margin-bottom:10px;"></div>
+      <button id="np-btn" style="width:100%;">Guardar e continuar</button>
+    </div>
+  </div>`;
+}
+function attachTrocarPasswordHandlers(){
+  document.getElementById('np-btn').onclick = async ()=>{
+    const p1=document.getElementById('np1').value, p2=document.getElementById('np2').value;
+    if(p1.length<4){ document.getElementById('np-err').textContent='A password deve ter pelo menos 4 caracteres.'; return; }
+    if(p1!==p2){ document.getElementById('np-err').textContent='As passwords não coincidem.'; return; }
+    try{
+      await api('POST','/auth/change-password', {newPassword:p1});
+      toast('Password atualizada.');
+      await loadCatalog();
+      S.view = S.session.role==='funcionario' ? 'novo-relatorio' : (S.session.role==='contabilista' ? 'contabilidade' : 'relatorios-dia');
+      render();
+    }catch(e){ document.getElementById('np-err').textContent = e.message; }
+  };
+}
+
+/* ============================================================
+   SHELL (header + tabs) por papel
+============================================================ */
+function tabsForRole(role){
+  if(role==='funcionario') return [
+    ['novo-relatorio','Novo Relatório'],
+    ['meus-relatorios','Meus Relatórios'],
+    ['stock','Stock'],
+    ['catalogo','Catálogo de Produtos'],
+  ];
+  if(role==='contabilista') return [
+    ['contabilidade','Contabilidade'],
+  ];
+  if(role==='supervisor') return [
+    ['relatorios-dia','Relatórios do Dia'],
+    ['pendentes','Pedidos Pendentes'],
+    ['contabilidade','Contabilidade'],
+    ['painel-bfa','Painel BFA'],
+    ['stock','Stock'],
+    ['resumo-mensal','Resumo Mensal'],
+    ['catalogo','Catálogo de Produtos'],
+  ];
+  return [ // admin
+    ['relatorios-dia','Relatórios do Dia'],
+    ['pendentes','Pedidos Pendentes'],
+    ['contabilidade','Contabilidade'],
+    ['painel-bfa','Painel BFA'],
+    ['stock','Stock'],
+    ['resumo-mensal','Resumo Mensal'],
+    ['catalogo','Catálogo de Produtos'],
+    ['utilizadores','Utilizadores'],
+  ];
+}
+const ROLE_LABELS = {admin:'ADM', supervisor:'Supervisor', funcionario:'Funcionário', contabilista:'Contabilista'};
+function viewShell(){
+  const tabs = tabsForRole(S.session.role);
+  const roleLabel = ROLE_LABELS[S.session.role];
+  let body='';
+  if(S.view==='novo-relatorio') body = viewNovoRelatorio();
+  else if(S.view==='meus-relatorios') body = viewMeusRelatorios();
+  else if(S.view==='recibo') body = viewRecibo(S.reciboAtual);
+  else if(S.view==='catalogo') body = viewCatalogo();
+  else if(S.view==='relatorios-dia') body = viewRelatoriosDia();
+  else if(S.view==='pendentes') body = viewPendentes();
+  else if(S.view==='contabilidade') body = viewContabilidade();
+  else if(S.view==='painel-bfa') body = viewPainelBFA();
+  else if(S.view==='stock') body = viewStock();
+  else if(S.view==='resumo-mensal') body = viewResumoMensal();
+  else if(S.view==='utilizadores') body = viewUtilizadores();
+  else body = '<div class="empty">Secção não encontrada.</div>';
+
+  return `
+    <div class="masthead">
+      <div>
+        <div class="title">Livro de Caixa</div>
+        <div class="sub">Relatório diário · agente bancário BFA</div>
+      </div>
+      <div class="who">
+        <span class="badge role-${S.session.role}">${roleLabel}</span>
+        ${S.session.store? ` · <b>${S.session.store}</b>`:''} · <b>${S.session.username}</b><br>
+        <span class="logout-link" id="logout-link">sair</span>
+      </div>
+    </div>
+    <div class="tabs">
+      ${tabs.map(([k,label])=>`<div class="tab ${S.view===k?'active':''}" data-tab="${k}">${label}</div>`).join('')}
+    </div>
+    <div id="tab-body">${body}</div>
+  `;
+}
+function attachShellHandlers(){
+  document.getElementById('logout-link').onclick = doLogout;
+  document.querySelectorAll('.tab').forEach(t=>{
+    t.onclick = ()=>{ S.view = t.getAttribute('data-tab'); render(); };
+  });
+  attachViewHandlers();
+}
+function attachViewHandlers(){
+  if(S.view==='novo-relatorio') attachNovoRelatorioHandlers();
+  else if(S.view==='meus-relatorios') attachMeusRelatoriosHandlers();
+  else if(S.view==='recibo') attachReciboHandlers();
+  else if(S.view==='catalogo') attachCatalogoHandlers();
+  else if(S.view==='relatorios-dia') attachRelatoriosDiaHandlers();
+  else if(S.view==='pendentes') attachPendentesHandlers();
+  else if(S.view==='contabilidade') attachContabilidadeHandlers();
+  else if(S.view==='painel-bfa') attachPainelBFAHandlers();
+  else if(S.view==='stock') attachStockHandlers();
+  else if(S.view==='resumo-mensal') attachResumoMensalHandlers();
+  else if(S.view==='utilizadores') attachUtilizadoresHandlers();
+}
+
+/* ============================================================
+   CATÁLOGO DE PRODUTOS
+============================================================ */
+function viewCatalogo(){
+  const rows = S.catalog.map(p=>`
+    <tr>
+      <td>${p.name}${p.denominacoes && p.denominacoes.length?`<div class="small-note">Denominações: ${p.denominacoes.join(', ')}</div>`:''}</td>
+      <td>${p.type==='saldo'?'Saldo / recarga':'Produto físico'}</td>
+      <td>${p.unit}</td>
+      <td>${p.naStores.includes(S.session.store)?'<span class="badge">não aplicável aqui</span>':''}</td>
+      <td style="text-align:right;">
+        ${S.session.role==='funcionario' ? `<button class="ghost small" data-toggle-na="${p.id}">${p.naStores.includes(S.session.store)?'Reativar para esta loja':'Marcar não aplicável aqui'}</button>` : `<button class="ghost small" data-remove="${p.id}">Remover</button>`}
+      </td>
+    </tr>`).join('');
+  return `
+  <div class="sheet">
+    <h2>Catálogo de Produtos</h2>
+    <p class="hint">Partilhado por todas as lojas. Qualquer utilizador pode adicionar um produto novo — passa a ficar disponível para todos.</p>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Produto</th><th>Tipo</th><th>Unidade</th><th>Estado</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5" class="empty">Sem produtos ainda.</td></tr>'}</tbody>
+    </table></div>
+    <hr class="divider">
+    <div class="section-label">Adicionar produto novo</div>
+    <div class="row3">
+      <div class="field-wrap"><label class="field">Nome do produto</label><input type="text" id="np-name" placeholder="ex: Telemóvel"></div>
+      <div class="field-wrap"><label class="field">Tipo</label>
+        <select id="np-type">
+          <option value="saldo">Saldo / recarga eletrónica (entrada/venda/resto em valor)</option>
+          <option value="fisico">Produto físico (quantidade)</option>
+        </select>
+      </div>
+      <div class="field-wrap"><label class="field">Unidade</label><input type="text" id="np-unit" placeholder="Kz, unidade, chip…" value="Kz"></div>
+    </div>
+    <div class="field-wrap"><label class="field">Denominações (só para produto físico tipo cartão — separadas por vírgula, ex: 200,500,1000). Deixa vazio se o preço variar por venda (ex: telemóvel).</label><input type="text" id="np-denom" placeholder="200,500,1000"></div>
+    <button id="add-product-btn">Adicionar ao catálogo</button>
+  </div>`;
+}
+function attachCatalogoHandlers(){
+  const btn = document.getElementById('add-product-btn');
+  if(btn) btn.onclick = async ()=>{
+    const name = document.getElementById('np-name').value.trim();
+    const type = document.getElementById('np-type').value;
+    const unit = document.getElementById('np-unit').value.trim() || 'Kz';
+    const denomRaw = document.getElementById('np-denom').value.trim();
+    const denominacoes = denomRaw ? denomRaw.split(',').map(s=>s.trim()).filter(Boolean) : [];
+    if(!name){ toast('Escreve o nome do produto.'); return; }
+    try{
+      await api('POST','/catalog', {name, type, unit, denominacoes: type==='fisico'?denominacoes:[]});
+      toast('Produto adicionado ao catálogo.');
+      await loadCatalog(); render();
+    }catch(e){ toast(e.message); }
+  };
+  document.querySelectorAll('[data-toggle-na]').forEach(b=>{
+    b.onclick = async ()=>{
+      try{
+        await api('PATCH', `/catalog/${b.getAttribute('data-toggle-na')}/toggle-na`, {store:S.session.store});
+        await loadCatalog(); render();
+      }catch(e){ toast(e.message); }
+    };
+  });
+  document.querySelectorAll('[data-remove]').forEach(b=>{
+    b.onclick = async ()=>{
+      if(!confirm('Remover este produto do catálogo para todas as lojas?')) return;
+      try{
+        await api('DELETE', `/catalog/${b.getAttribute('data-remove')}`);
+        await loadCatalog(); render();
+      }catch(e){ toast(e.message); }
+    };
+  });
+}
+
+/* ============================================================
+   NOVO RELATÓRIO (funcionário)
+============================================================ */
+async function ensureDraft(){
+  if(S.draftReport && S.draftReport.date===S.selectedDate && S.draftReport.store===S.session.store) return;
+  const store = S.session.store;
+  const date = S.selectedDate;
+  // O servidor já constrói o rascunho inicial (catálogo aplicável + transporte
+  // do Resto do último relatório enviado), por isso basta pedir o "draft".
+  S.draftReport = await getReport(date, store);
+}
+function calcProduto(p){
+  if(p.tipo==='saldo'){
+    const reforcoTotal = (p.reforcos||[]).reduce((a,r)=>a+Number(r.valor||0),0);
+    const entrada = Number(p.entradaInformada||0) + reforcoTotal;
+    p.resto = entrada - Number(p.vendaValor||0);
+    p.entradaTotal = entrada;
+    p.vendaTotalValor = Number(p.vendaValor||0);
+    p.diferenca = (p.entradaEsperada!==null && p.entradaEsperada!==undefined) ? Number(p.entradaInformada||0) - Number(p.entradaEsperada||0) : 0;
+  } else if(p.variantes && p.variantes.length){
+    let entradaTotal=0, vendaTotalValor=0, restoTotal=0, qtdVendidaTotal=0, diferencaTotal=0;
+    p.variantes.forEach(v=>{
+      const reforcoTotal = (v.reforcos||[]).reduce((a,r)=>a+Number(r.valor||0),0);
+      const entrada = Number(v.entradaInformada||0) + reforcoTotal;
+      const qtdVendida = Number(v.qtdVendida||0);
+      v.resto = entrada - qtdVendida;
+      v.entradaTotal = entrada;
+      v.valorVendido = qtdVendida * Number(v.denom||0);
+      v.diferenca = (v.entradaEsperada!==null && v.entradaEsperada!==undefined) ? Number(v.entradaInformada||0) - Number(v.entradaEsperada||0) : 0;
+      entradaTotal += entrada; vendaTotalValor += v.valorVendido; restoTotal += v.resto; qtdVendidaTotal += qtdVendida;
+      diferencaTotal += v.diferenca;
+    });
+    p.entradaTotal = entradaTotal; p.vendaTotalValor = vendaTotalValor; p.resto = restoTotal;
+    p.qtdVendida = qtdVendidaTotal; p.diferenca = diferencaTotal;
+  } else {
+    const reforcoTotal = (p.reforcos||[]).reduce((a,r)=>a+Number(r.valor||0),0);
+    const entrada = Number(p.entradaInformada||0) + reforcoTotal;
+    const qtdVendida = (p.vendasLinhas||[]).reduce((a,l)=>a+Number(l.qtd||0),0);
+    const valorVendido = (p.vendasLinhas||[]).reduce((a,l)=>a+Number(l.qtd||0)*Number(l.preco||0),0);
+    p.resto = entrada - qtdVendida;
+    p.entradaTotal = entrada;
+    p.qtdVendida = qtdVendida;
+    p.vendaTotalValor = valorVendido;
+    p.diferenca = (p.entradaEsperada!==null && p.entradaEsperada!==undefined) ? Number(p.entradaInformada||0) - Number(p.entradaEsperada||0) : 0;
+  }
+}
+function bfaStatus(bfa){
+  const diferencaAEntregar = Number(bfa.depositos||0) - Number(bfa.levantamentos||0);
+  const totalEntregue = Number(bfa.cash||0)+Number(bfa.tpa||0)+Number(bfa.transferencia||0)+Number(bfa.depositoBanco||0);
+  const diff = totalEntregue - diferencaAEntregar;
+  let estado='ok';
+  if(diff<0) estado='falta'; else if(diff>0) estado='mais';
+  return {diferencaAEntregar, totalEntregue, diff, estado};
+}
+function totalVendidoRep(rep){ return rep.produtos.reduce((a,p)=>a+Number(p.vendaTotalValor||0),0); }
+function totalSaidasRep(rep){ return (rep.saidas||[]).reduce((a,s)=>a+Number(s.valor||0),0); }
+/* Total Geral a Entregar = tudo o que a loja deve prestar contas à contabilidade:
+   o que veio do BFA (depósitos - levantamentos) MAIS a receita de vendas de todos
+   os produtos (ZAP, Unitel, Afrimoney, produtos físicos, etc.) MENOS as saídas já
+   pagas em dinheiro. O "Total entregue" continua a ser cash + TPA + transferência +
+   depósito no banco, porque são os mesmos canais por onde qualquer valor sai da loja. */
+function entregaStatusGeral(rep){
+  const bfa = bfaStatus(rep.bfa);
+  const totalAEntregar = totalVendidoRep(rep) - totalSaidasRep(rep) + bfa.diferencaAEntregar;
+  const totalEntregue = bfa.totalEntregue;
+  const diff = totalEntregue - totalAEntregar;
+  let estado='ok';
+  if(diff<0) estado='falta'; else if(diff>0) estado='mais';
+  return {totalAEntregar, totalEntregue, diff, estado, diferencaBFA: bfa.diferencaAEntregar};
+}
+function viewNovoRelatorio(){
+  if(!S.draftReport){
+    ensureDraft().then(render);
+    return '<div class="empty">A preparar o relatório do dia…</div>';
+  }
+  const rep = S.draftReport;
+  rep.produtos.forEach(calcProduto);
+  const bfa = bfaStatus(rep.bfa);
+  const geral = entregaStatusGeral(rep);
+  const totalVendido = rep.produtos.reduce((a,p)=>a+Number(p.vendaTotalValor||0),0);
+  const totalSaidas = (rep.saidas||[]).reduce((a,s)=>a+Number(s.valor||0),0);
+  const locked = isLocked(rep);
+
+  const rowsProdutos = rep.produtos.map((p,i)=>{
+    if(p.variantes && p.variantes.length){
+      return p.variantes.map((v,j)=>{
+        const diffBadge = (v.entradaEsperada===null||v.entradaEsperada===undefined) ? '<span class="muted">— primeiro dia —</span>' :
+          (v.diferenca===0 ? '<span class="stamp ok">BATE CERTO</span>' :
+           v.diferenca>0 ? '<span class="stamp mais">A MAIS</span>' : '<span class="stamp falta">EM FALTA</span>');
+        return `
+        <tr>
+          <td>${p.nome} <span class="badge">${v.denom}</span><div class="small-note">${p.unidade}</div></td>
+          <td class="num-cell">${v.entradaEsperada==null?'—':fmt(v.entradaEsperada)}</td>
+          <td><input type="number" data-pv="${i}|${j}" data-f="entradaInformada" value="${v.entradaInformada}" ${locked?'disabled':''} style="width:90px;"></td>
+          <td><button class="ghost small" data-reforco-v="${i}|${j}" ${locked?'disabled':''}>+ Reforço (${(v.reforcos||[]).length})</button></td>
+          <td><input type="number" data-pv="${i}|${j}" data-f="qtdVendida" value="${v.qtdVendida}" ${locked?'disabled':''} style="width:80px;"></td>
+          <td class="num-cell">${fmt(v.resto)}</td>
+          <td>${diffBadge}</td>
+        </tr>`;
+      }).join('');
+    }
+    const diffBadge = p.entradaEsperada===null ? '<span class="muted">— primeiro dia —</span>' :
+      (p.diferenca===0 ? '<span class="stamp ok">BATE CERTO</span>' :
+       p.diferenca>0 ? '<span class="stamp mais">A MAIS</span>' : '<span class="stamp falta">EM FALTA</span>');
+    const vendaCell = p.tipo==='saldo'
+      ? `<input type="number" data-p="${i}" data-f="vendaValor" value="${p.vendaValor}" ${locked?'disabled':''} style="width:100px;">`
+      : `<button class="ghost small" data-linhas="${i}" ${locked?'disabled':''}>Vendas (${(p.vendasLinhas||[]).length})</button>`;
+    return `
+    <tr>
+      <td>${p.nome}<div class="small-note">${p.unidade}</div></td>
+      <td class="num-cell">${p.entradaEsperada===null?'—':fmt(p.entradaEsperada)}</td>
+      <td><input type="number" data-p="${i}" data-f="entradaInformada" value="${p.entradaInformada}" ${locked?'disabled':''} style="width:100px;"></td>
+      <td>
+        <button class="ghost small" data-reforco="${i}" ${locked?'disabled':''}>+ Reforço (${(p.reforcos||[]).length})</button>
+      </td>
+      <td>${vendaCell}</td>
+      <td class="num-cell">${fmt(p.resto)}</td>
+      <td>${diffBadge}</td>
+    </tr>`;
+  }).join('');
+
+  const semMovimento = rep.produtos.filter(p=>Number(p.vendaTotalValor||0)===0);
+
+  const saidasRows = (rep.saidas||[]).map((s,i)=>`
+    <tr>
+      <td><input type="text" data-saida="${i}" data-f="descricao" value="${s.descricao||''}" ${locked?'disabled':''}></td>
+      <td><input type="number" data-saida="${i}" data-f="valor" value="${s.valor||0}" ${locked?'disabled':''} style="width:110px;"></td>
+      <td>${locked?'':`<button class="ghost small" data-rm-saida="${i}">remover</button>`}</td>
+    </tr>`).join('');
+
+  return `
+  <div class="sheet">
+    <div class="row2">
+      <div>
+        <h2>Relatório do dia — ${rep.store}</h2>
+        <p class="hint">Data do relatório</p>
+      </div>
+      <div class="field-wrap"><input type="date" id="rep-date" value="${S.selectedDate}" ${locked?'disabled':''}></div>
+    </div>
+
+    ${statusBanner(rep)}
+
+    <div class="section-label">Produtos</div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Produto</th><th>Entrada esperada</th><th>Entrada informada</th><th>Reforços</th><th>Venda</th><th>Resto</th><th>Estado transporte</th></tr></thead>
+      <tbody>${rowsProdutos || '<tr><td colspan="7" class="empty">Sem produtos no catálogo para esta loja.</td></tr>'}</tbody>
+    </table></div>
+
+    <div class="section-label">Saídas</div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Descrição</th><th>Valor</th><th></th></tr></thead>
+      <tbody>${saidasRows || '<tr><td colspan="3" class="empty">Sem saídas registadas.</td></tr>'}</tbody>
+    </table></div>
+    ${locked?'':'<button class="ghost small" id="add-saida">+ adicionar saída</button>'}
+
+    <div class="section-label">BFA — Agente Bancário</div>
+    <div class="row2">
+      <div class="field-wrap"><label class="field">Depósitos feitos hoje (Kz)</label><input type="number" id="bfa-depositos" value="${rep.bfa.depositos}" ${locked?'disabled':''}></div>
+      <div class="field-wrap"><label class="field">Levantamentos feitos hoje (Kz)</label><input type="number" id="bfa-levantamentos" value="${rep.bfa.levantamentos}" ${locked?'disabled':''}></div>
+    </div>
+    <div class="kv"><span>Diferença a entregar (Depósitos − Levantamentos)</span><b>${fmt(bfa.diferencaAEntregar)} Kz</b></div>
+    <hr class="divider">
+    <div class="row4">
+      <div class="field-wrap"><label class="field">Cash em mão</label><input type="number" id="bfa-cash" value="${rep.bfa.cash}" ${locked?'disabled':''}></div>
+      <div class="field-wrap"><label class="field">TPA</label><input type="number" id="bfa-tpa" value="${rep.bfa.tpa}" ${locked?'disabled':''}></div>
+      <div class="field-wrap"><label class="field">Transferência</label><input type="number" id="bfa-transferencia" value="${rep.bfa.transferencia}" ${locked?'disabled':''}></div>
+      <div class="field-wrap"><label class="field">Depósito no banco</label><input type="number" id="bfa-depositoBanco" value="${rep.bfa.depositoBanco}" ${locked?'disabled':''}></div>
+    </div>
+    <hr class="divider">
+    <div class="kv"><span><b>Total Geral a Entregar</b> (vendas de todos os produtos − saídas + diferença BFA)</span><b>${fmt(geral.totalAEntregar)} Kz</b></div>
+    <div class="kv"><span>Total entregue (cash + TPA + transferência + depósito banco)</span><b>${fmt(geral.totalEntregue)} Kz</b></div>
+    <div style="margin-top:8px;">
+      ${geral.estado==='ok'?'<span class="stamp ok">ESTÁ CORRETO</span>':
+        geral.estado==='falta'?`<span class="stamp falta">ESTÁ EM FALTA — ${fmt(Math.abs(geral.diff))} Kz</span>`:
+        `<span class="stamp mais">ESTÁ A MAIS — ${fmt(Math.abs(geral.diff))} Kz</span>`}
+    </div>
+
+    <div class="section-label">Observações</div>
+    ${(function(){
+      const linhas=[];
+      rep.produtos.forEach(p=>{
+        if(p.variantes && p.variantes.length){
+          p.variantes.forEach(v=>{
+            if(v.entradaEsperada!==null && v.entradaEsperada!==undefined && v.diferenca!==0){
+              linhas.push(`<div class="obs-auto ${v.diferenca>0?'mais':''}">⚠ ${p.nome} (${v.denom}): esperado ${fmt(v.entradaEsperada)}, informado ${fmt(v.entradaInformada)} → ${v.diferenca>0?'entrou a mais '+fmt(v.diferenca):'em falta '+fmt(Math.abs(v.diferenca))}</div>`);
+            }
+          });
+        } else if(p.entradaEsperada!==null && p.diferenca!==0){
+          linhas.push(`<div class="obs-auto ${p.diferenca>0?'mais':''}">⚠ ${p.nome}: esperado ${fmt(p.entradaEsperada)}, informado ${fmt(p.entradaInformada)} → ${p.diferenca>0?'entrou a mais '+fmt(p.diferenca):'em falta '+fmt(Math.abs(p.diferenca))}</div>`);
+        }
+      });
+      return linhas.join('');
+    })()}
+    <textarea id="rep-obs" rows="3" placeholder="Observações adicionais…" ${locked?'disabled':''}>${rep.obs||''}</textarea>
+
+    <hr class="divider">
+    <div class="kv"><span>Total vendido</span><b>${fmt(totalVendido)} Kz</b></div>
+    <div class="kv"><span>Total de saídas</span><b>${fmt(totalSaidas)} Kz</b></div>
+
+    ${locked ? lockedBanner(rep) : `
+      <div style="margin-top:16px;display:flex;gap:10px;">
+        <button id="save-draft">Guardar rascunho</button>
+        <button id="submit-report" class="secondary" style="border-color:var(--stamp-green);color:var(--stamp-green);">Confirmar e enviar</button>
+      </div>
+    `}
+  </div>`;
+}
+function statusBanner(rep){
+  if(rep.status==='rascunho') return '<div class="banner">Rascunho — ainda não enviado. É guardado automaticamente enquanto preenches.</div>';
+  if(rep.status==='enviado'){
+    const mins = minutesSince(rep.enviadoEm);
+    if(mins<15) return `<div class="banner ok">Enviado às ${fmtTime(rep.enviadoEm)}. Podes editar livremente por mais ${15-mins} min.</div>`;
+    return '';
+  }
+  return '';
+}
+function lockedBanner(rep){
+  const pend = (rep.pedidosEdicao||[]).find(p=>p.status==='pendente');
+  if(pend) return `<div class="banner mais">Pedido de edição enviado às ${fmtTime(pend.pedidoEm)} — aguardando aprovação do Supervisor ou ADM.</div>`;
+  return `
+    <div class="banner falta">
+      A janela de 15 minutos para edição livre já passou. Para corrigir este relatório, pede autorização ao Supervisor ou ao ADM.
+    </div>
+    <div class="field-wrap"><label class="field">Motivo do pedido de edição</label><textarea id="motivo-pedido" rows="2"></textarea></div>
+    <button id="pedir-edicao" class="secondary">Pedir autorização para editar</button>
+  `;
+}
+function isLocked(rep){
+  if(rep.status!=='enviado') return false;
+  if(minutesSince(rep.enviadoEm) < 15) return false;
+  const aprovado = (rep.pedidosEdicao||[]).find(p=>p.status==='aprovado' && minutesSince(p.aprovadoEm) < 15);
+  return !aprovado;
+}
+function minutesSince(iso){ if(!iso) return 9999; return Math.floor((Date.now()-new Date(iso).getTime())/60000); }
+function fmtTime(iso){ if(!iso) return ''; const d=new Date(iso); return d.toLocaleTimeString('pt-PT',{hour:'2-digit',minute:'2-digit'}); }
+
+function attachNovoRelatorioHandlers(){
+  const rep = S.draftReport;
+  if(!rep) return;
+  const dateInput = document.getElementById('rep-date');
+  if(dateInput) dateInput.onchange = e=>{ S.selectedDate = e.target.value; S.draftReport=null; render(); };
+
+  document.querySelectorAll('input[data-p]').forEach(inp=>{
+    inp.oninput = ()=>{
+      const i = Number(inp.getAttribute('data-p')); const f = inp.getAttribute('data-f');
+      rep.produtos[i][f] = inp.value;
+      persistDraftSilently();
+    };
+  });
+  document.querySelectorAll('input[data-pv]').forEach(inp=>{
+    inp.oninput = ()=>{
+      const [i,j] = inp.getAttribute('data-pv').split('|').map(Number);
+      const f = inp.getAttribute('data-f');
+      rep.produtos[i].variantes[j][f] = inp.value;
+      persistDraftSilently();
+    };
+  });
+  document.querySelectorAll('[data-reforco]').forEach(b=>{
+    b.onclick = ()=>{
+      const i = Number(b.getAttribute('data-reforco'));
+      const valor = prompt('Valor/quantidade do reforço:');
+      if(valor===null || valor==='') return;
+      const p = rep.produtos[i];
+      p.reforcos = p.reforcos||[];
+      p.reforcos.push({valor:Number(valor), hora:nowIso()});
+      persistDraftSilently(); render();
+    };
+  });
+  document.querySelectorAll('[data-reforco-v]').forEach(b=>{
+    b.onclick = ()=>{
+      const [i,j] = b.getAttribute('data-reforco-v').split('|').map(Number);
+      const valor = prompt('Quantidade reforçada nesta denominação:');
+      if(valor===null || valor==='') return;
+      const v = rep.produtos[i].variantes[j];
+      v.reforcos = v.reforcos||[];
+      v.reforcos.push({valor:Number(valor), hora:nowIso()});
+      persistDraftSilently(); render();
+    };
+  });
+  document.querySelectorAll('[data-linhas]').forEach(b=>{
+    b.onclick = ()=>{
+      const i = Number(b.getAttribute('data-linhas'));
+      const p = rep.produtos[i];
+      const qtd = prompt('Quantidade vendida nesta linha:');
+      if(qtd===null || qtd==='') return;
+      const preco = prompt('Preço unitário desta linha (Kz):');
+      if(preco===null || preco==='') return;
+      p.vendasLinhas = p.vendasLinhas||[];
+      p.vendasLinhas.push({qtd:Number(qtd), preco:Number(preco)});
+      persistDraftSilently(); render();
+    };
+  });
+  const addSaida = document.getElementById('add-saida');
+  if(addSaida) addSaida.onclick = ()=>{ rep.saidas.push({descricao:'',valor:0}); render(); };
+  document.querySelectorAll('[data-saida]').forEach(inp=>{
+    inp.oninput = ()=>{
+      const i=Number(inp.getAttribute('data-saida')); const f=inp.getAttribute('data-f');
+      rep.saidas[i][f] = f==='valor'? Number(inp.value): inp.value;
+      persistDraftSilently();
+    };
+  });
+  document.querySelectorAll('[data-rm-saida]').forEach(b=>{
+    b.onclick = ()=>{ rep.saidas.splice(Number(b.getAttribute('data-rm-saida')),1); render(); };
+  });
+  ['depositos','levantamentos','cash','tpa','transferencia','depositoBanco'].forEach(f=>{
+    const el = document.getElementById('bfa-'+f);
+    if(el) el.oninput = ()=>{ rep.bfa[f]=Number(el.value); persistDraftSilently(); renderInPlaceBfa(); };
+  });
+  const obsEl = document.getElementById('rep-obs');
+  if(obsEl) obsEl.oninput = ()=>{ rep.obs = obsEl.value; persistDraftSilently(); };
+
+  const saveDraft = document.getElementById('save-draft');
+  if(saveDraft) saveDraft.onclick = async ()=>{ await saveReport(rep); toast('Rascunho guardado.'); };
+
+  const submitBtn = document.getElementById('submit-report');
+  if(submitBtn) submitBtn.onclick = ()=>confirmarEnvio(rep);
+
+  const pedirEdicao = document.getElementById('pedir-edicao');
+  if(pedirEdicao) pedirEdicao.onclick = async ()=>{
+    const motivo = document.getElementById('motivo-pedido').value.trim();
+    if(!motivo){ toast('Escreve o motivo do pedido.'); return; }
+    try{
+      const updated = await api('POST', `/reports/${rep.id}/request-edit`, {motivo});
+      toast('Pedido enviado ao Supervisor/ADM.');
+      S.draftReport = updated;
+      render();
+    }catch(e){ toast(e.message); }
+  };
+}
+function renderInPlaceBfa(){ /* recalculo simples via re-render completo é suficiente */ }
+let _persistTimer = null;
+function persistDraftSilently(){
+  if(_persistTimer) clearTimeout(_persistTimer);
+  _persistTimer = setTimeout(()=>{ saveReport(S.draftReport); }, 400);
+}
+
+function confirmarEnvio(rep){
+  rep.produtos.forEach(calcProduto);
+  const geral = entregaStatusGeral(rep);
+  const totalVendido = totalVendidoRep(rep);
+  const semMovimento = rep.produtos.filter(p=>Number(p.vendaTotalValor||0)===0).map(p=>p.nome);
+  const msg = `Confirmar envio do relatório?\n\nTotal vendido: ${fmt(totalVendido)} Kz\nTotal Geral a Entregar: ${fmt(geral.totalAEntregar)} Kz\nEstado: ${geral.estado==='ok'?'Correto':geral.estado==='falta'?'Em falta '+fmt(Math.abs(geral.diff))+' Kz':'A mais '+fmt(Math.abs(geral.diff))+' Kz'}\n${semMovimento.length?'Sem venda hoje: '+semMovimento.join(', '):'Todos os produtos tiveram movimento.'}`;
+  if(!confirm(msg)) return;
+  enviarRelatorio(rep);
+}
+async function enviarRelatorio(rep){
+  if(_persistTimer) clearTimeout(_persistTimer);
+  await saveReport(rep); // garante que o rascunho fica gravado antes de enviar
+  try{
+    const submitted = await api('POST', `/reports/${rep.date}/${encodeURIComponent(rep.store)}/submit`);
+    toast('Relatório enviado.');
+    S.reciboAtual = submitted;
+    S.draftReport = submitted;
+    S.view='recibo';
+    render();
+  }catch(e){ toast(e.message); }
+}
+
+/* ============================================================
+   MEUS RELATÓRIOS (funcionário) + RECIBO
+============================================================ */
+function viewMeusRelatorios(){
+  return `
+  <div class="sheet">
+    <h2>Meus Relatórios — ${S.session.store}</h2>
+    <div class="field-wrap" style="max-width:220px;"><label class="field">Escolhe uma data</label><input type="date" id="mr-date" value="${S.selectedDate}"></div>
+    <div id="mr-body" class="empty">A carregar…</div>
+  </div>`;
+}
+function attachMeusRelatoriosHandlers(){
+  const load = async ()=>{
+    const date = document.getElementById('mr-date').value;
+    S.selectedDate = date;
+    const rep = await getReport(date, S.session.store);
+    const el = document.getElementById('mr-body');
+    if(!rep){ el.innerHTML = '<div class="empty">Sem relatório guardado para esta data.</div>'; return; }
+    el.innerHTML = `
+      <div class="store-card">
+        <div class="head"><span class="name">${date}</span><span class="badge">${rep.status==='enviado'?'Enviado':'Rascunho'}</span></div>
+        <button class="ghost small" id="ver-recibo">Ver recibo do relatório</button>
+      </div>`;
+    document.getElementById('ver-recibo').onclick = ()=>{ S.reciboAtual = rep; S.view='recibo'; render(); };
+  };
+  document.getElementById('mr-date').onchange = load;
+  load();
+}
+function viewRecibo(rep){
+  if(!rep) return '<div class="empty">Sem recibo para mostrar.</div>';
+  rep.produtos.forEach(calcProduto);
+  const geral = entregaStatusGeral(rep);
+  const totalVendido = totalVendidoRep(rep);
+  const totalSaidas = totalSaidasRep(rep);
+  const cont = rep.contabilidade || {recebido:null, explicacaoFuncionario:null, depositado:null};
+  return `
+  <div class="sheet">
+    <h2>Recibo do Relatório — ${rep.store}</h2>
+    <p class="hint">${rep.date} · enviado por ${rep.enviadoPor||'—'} às ${fmtTime(rep.enviadoEm)}</p>
+    <div class="section-label">Produtos</div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Produto</th><th>Entrada</th><th>Venda</th><th>Resto</th><th>Estado</th></tr></thead>
+      <tbody>
+        ${rep.produtos.map(p=>{
+          if(p.variantes && p.variantes.length){
+            return p.variantes.map(v=>`
+              <tr>
+                <td>${p.nome} <span class="badge">${v.denom}</span></td>
+                <td class="num-cell">${fmt(v.entradaTotal)}</td>
+                <td class="num-cell">${fmt(v.valorVendido)}</td>
+                <td class="num-cell">${fmt(v.resto)}</td>
+                <td>${(v.entradaEsperada===null||v.entradaEsperada===undefined)?'—':(v.diferenca===0?'<span class="stamp ok">OK</span>':v.diferenca>0?'<span class="stamp mais">A MAIS</span>':'<span class="stamp falta">EM FALTA</span>')}</td>
+              </tr>`).join('');
+          }
+          return `
+          <tr>
+            <td>${p.nome}</td>
+            <td class="num-cell">${fmt(p.entradaTotal)}</td>
+            <td class="num-cell">${fmt(p.vendaTotalValor)}</td>
+            <td class="num-cell">${fmt(p.resto)}</td>
+            <td>${p.entradaEsperada===null?'—':(p.diferenca===0?'<span class="stamp ok">OK</span>':p.diferenca>0?'<span class="stamp mais">A MAIS</span>':'<span class="stamp falta">EM FALTA</span>')}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table></div>
+    <div class="section-label">BFA e Entrega Geral</div>
+    <div class="kv"><span>Diferença BFA (depósitos − levantamentos)</span><b>${fmt(geral.diferencaBFA)} Kz</b></div>
+    <div class="kv"><span><b>Total Geral a Entregar</b> (vendas + BFA − saídas)</span><b>${fmt(geral.totalAEntregar)} Kz</b></div>
+    <div class="kv"><span>Total entregue</span><b>${fmt(geral.totalEntregue)} Kz</b></div>
+    <div style="margin-top:8px;">${geral.estado==='ok'?'<span class="stamp ok">CORRETO</span>':geral.estado==='falta'?`<span class="stamp falta">EM FALTA ${fmt(Math.abs(geral.diff))} Kz</span>`:`<span class="stamp mais">A MAIS ${fmt(Math.abs(geral.diff))} Kz</span>`}</div>
+    <hr class="divider">
+    <div class="kv"><span>Total vendido</span><b>${fmt(totalVendido)} Kz</b></div>
+    <div class="kv"><span>Total de saídas</span><b>${fmt(totalSaidas)} Kz</b></div>
+    ${rep.obs?`<div class="section-label">Observações</div><p>${rep.obs}</p>`:''}
+
+    <div class="section-label">Contabilidade</div>
+    ${cont.recebido ? `
+      <div class="kv"><span>Recebido pela contabilidade</span><b>${fmt(cont.recebido.valor)} Kz</b> ${cont.recebido.estado==='pendencia'?'<span class="stamp falta">PENDÊNCIA</span>':'<span class="stamp ok">OK</span>'}</div>
+      ${cont.recebido.estado==='pendencia' ? `
+        <div class="banner falta">⚠ Diferença de ${fmt(Math.abs(cont.recebido.diferenca))} Kz entre o recebido e o Total Geral a Entregar (${cont.recebido.diferenca>0?'entregou a mais':'entregou a menos'}). Por favor explica abaixo.</div>
+        ${cont.explicacaoFuncionario ? `<div class="kv"><span>Explicação enviada</span><b>${cont.explicacaoFuncionario}</b></div>` :
+          (S.session.role==='funcionario' ? `
+            <div class="field-wrap"><label class="field">Explica a diferença</label><textarea id="explicacao-pendencia" rows="2"></textarea></div>
+            <button class="secondary small" id="salvar-explicacao">Guardar explicação</button>
+          ` : '<p class="muted small-note">Aguardando explicação da loja.</p>')}
+      ` : ''}
+      <div class="kv" style="margin-top:8px;"><span>Depositado no banco</span><b>${cont.depositado?fmt(cont.depositado.valor)+' Kz · ref. '+cont.depositado.referencia:'ainda não'}</b></div>
+    ` : '<p class="muted">A contabilidade ainda não confirmou o recebimento deste relatório.</p>'}
+
+    <div style="margin-top:16px;"><button class="ghost" id="voltar-btn">Voltar</button></div>
+  </div>`;
+}
+function attachReciboHandlers(){
+  const b = document.getElementById('voltar-btn');
+  if(b) b.onclick = ()=>{ S.view = S.session.role==='funcionario'?'meus-relatorios':(S.session.role==='contabilista'?'contabilidade':'relatorios-dia'); render(); };
+  const expBtn = document.getElementById('salvar-explicacao');
+  if(expBtn) expBtn.onclick = async ()=>{
+    const rep = S.reciboAtual;
+    const texto = document.getElementById('explicacao-pendencia').value.trim();
+    if(!texto){ toast('Escreve a explicação.'); return; }
+    try{
+      const updated = await api('POST', `/contabilidade/${rep.id}/explicacao`, {texto});
+      S.reciboAtual = updated;
+      toast('Explicação guardada.');
+      render();
+    }catch(e){ toast(e.message); }
+  };
+}
+
+/* ============================================================
+   RELATÓRIOS DO DIA (supervisor/admin)
+============================================================ */
+function viewRelatoriosDia(){
+  return `
+  <div class="sheet">
+    <h2>Relatórios do Dia</h2>
+    <div class="field-wrap" style="max-width:220px;"><label class="field">Data</label><input type="date" id="rd-date" value="${S.selectedDate}"></div>
+    <div id="rd-body" class="empty">A carregar…</div>
+  </div>`;
+}
+async function loadRelatoriosDia(){
+  const date = document.getElementById('rd-date').value;
+  S.selectedDate = date;
+  await loadUsers();
+  const reps = await listReportsForDate(date);
+  const lojas = S.users.filter(u=>u.role==='funcionario').map(u=>u.store);
+  const lojasComRelatorio = reps.map(r=>r.store);
+  const faltando = lojas.filter(l=>!lojasComRelatorio.includes(l));
+  let html='';
+  faltando.forEach(l=>{ html += `<div class="missing-card">⚠ ${l} ainda não lançou o relatório de ${date}.</div>`; });
+  let totalGeral=0, totalSaidasGeral=0;
+  reps.forEach(rep=>{
+    rep.produtos.forEach(calcProduto);
+    const geral = entregaStatusGeral(rep);
+    const totalVendido = totalVendidoRep(rep);
+    const totalSaidas = totalSaidasRep(rep);
+    totalGeral += totalVendido; totalSaidasGeral += totalSaidas;
+    html += `
+      <div class="store-card">
+        <div class="head">
+          <span class="name">${rep.store}</span>
+          <span>${geral.estado==='ok'?'<span class="stamp ok">ENTREGA OK</span>':geral.estado==='falta'?'<span class="stamp falta">ENTREGA EM FALTA</span>':'<span class="stamp mais">ENTREGA A MAIS</span>'}</span>
+        </div>
+        <div class="kv"><span>Total vendido</span><b>${fmt(totalVendido)} Kz</b></div>
+        <div class="kv"><span>Total de saídas</span><b>${fmt(totalSaidas)} Kz</b></div>
+        <div class="kv"><span>Status</span><b>${rep.status==='enviado'?'Enviado':'Rascunho'}</b></div>
+        <button class="ghost small" data-ver-recibo="${rep.store}">Ver recibo completo</button>
+      </div>`;
+  });
+  if(reps.length){
+    html += `<div class="banner ok">Total geral do dia: ${fmt(totalGeral)} Kz vendidos · ${fmt(totalSaidasGeral)} Kz em saídas.</div>`;
+  } else if(!faltando.length){
+    html += '<div class="empty">Sem lojas registadas ainda.</div>';
+  }
+  document.getElementById('rd-body').innerHTML = html || '<div class="empty">Sem dados.</div>';
+  document.querySelectorAll('[data-ver-recibo]').forEach(b=>{
+    b.onclick = async ()=>{
+      const rep = reps.find(r=>r.store===b.getAttribute('data-ver-recibo'));
+      S.reciboAtual = rep; S.view='recibo'; render();
+    };
+  });
+}
+function attachRelatoriosDiaHandlers(){
+  document.getElementById('rd-date').onchange = loadRelatoriosDia;
+  loadRelatoriosDia();
+}
+
+/* ============================================================
+   PEDIDOS PENDENTES (supervisor/admin)
+============================================================ */
+function viewPendentes(){
+  return `<div class="sheet"><h2>Pedidos de Edição Pendentes</h2><div id="pend-body" class="empty">A carregar…</div></div>`;
+}
+async function loadPendentes(){
+  // varre os últimos 45 dias por simplicidade
+  const hoje = new Date();
+  let html=''; let achou=false;
+  for(let i=0;i<45;i++){
+    const d = new Date(hoje); d.setDate(d.getDate()-i);
+    const dateStr = d.toISOString().slice(0,10);
+    const reps = await listReportsForDate(dateStr);
+    for(const rep of reps){
+      const pend = (rep.pedidosEdicao||[]).filter(p=>p.status==='pendente');
+      for(const p of pend){
+        achou=true;
+        const expirado = (Date.now()-new Date(p.pedidoEm).getTime()) > 24*3600*1000;
+        html += `
+        <div class="store-card">
+          <div class="head"><span class="name">${rep.store} — ${rep.date}</span>${expirado?'<span class="badge">expirado (24h)</span>':''}</div>
+          <div class="kv"><span>Motivo</span><b>${p.motivo}</b></div>
+          <div class="kv"><span>Pedido por</span><b>${p.pedidoPor}</b></div>
+          <div class="kv"><span>Às</span><b>${fmtTime(p.pedidoEm)} · ${p.pedidoEm.slice(0,10)}</b></div>
+          <div style="margin-top:8px;display:flex;gap:8px;">
+            <button class="small" data-aprovar="${rep.id}|${p.id}" ${expirado?'disabled':''}>Aprovar</button>
+            <button class="ghost small" data-rejeitar="${rep.id}|${p.id}">Rejeitar</button>
+          </div>
+        </div>`;
+      }
+    }
+  }
+  document.getElementById('pend-body').innerHTML = achou ? html : '<div class="empty">Sem pedidos pendentes.</div>';
+  document.querySelectorAll('[data-aprovar]').forEach(b=>{
+    b.onclick = async ()=>{
+      const [reportId, reqId] = b.getAttribute('data-aprovar').split('|');
+      try{
+        await api('POST', `/reports/${reportId}/edit-requests/${reqId}/approve`);
+        toast('Pedido aprovado. A loja tem mais 15 min para editar.');
+      }catch(e){ toast(e.message); }
+      loadPendentes();
+    };
+  });
+  document.querySelectorAll('[data-rejeitar]').forEach(b=>{
+    b.onclick = async ()=>{
+      const [reportId, reqId] = b.getAttribute('data-rejeitar').split('|');
+      try{
+        await api('POST', `/reports/${reportId}/edit-requests/${reqId}/reject`);
+        toast('Pedido rejeitado.');
+      }catch(e){ toast(e.message); }
+      loadPendentes();
+    };
+  });
+}
+function attachPendentesHandlers(){ loadPendentes(); }
+
+/* ============================================================
+   CONTABILIDADE
+   - Contabilista: confirma recebimento (loja a loja, conforme cada
+     uma fecha o dia) e depois confirma o depósito no banco.
+   - Se o valor recebido não bater com o Total Geral a Entregar do
+     relatório, fica registado como pendência e a loja é notificada
+     (vê no próprio recibo) para explicar a diferença.
+   - Supervisor/ADM veem tudo em modo leitura, com alerta se o
+     dinheiro ficar recebido há mais de 24h sem depósito confirmado.
+============================================================ */
+function viewContabilidade(){
+  return `<div class="sheet"><h2>Contabilidade</h2><div id="cont-body" class="empty">A carregar…</div></div>`;
+}
+async function loadContabilidade(){
+  const isContabilista = S.session.role==='contabilista';
+  let reps = [];
+  try{ reps = await api('GET', '/contabilidade/pendentes?dias=45'); }catch(e){ toast(e.message); }
+
+  let receberHtml='', depositarHtml='', dashboardHtml='';
+  reps.forEach(rep=>{
+    const geral = rep.geral; // já vem calculado do servidor
+    const c = rep.contabilidade || {recebido:null, explicacaoFuncionario:null, depositado:null};
+
+    if(isContabilista && !c.recebido){
+      receberHtml += `
+      <div class="store-card">
+        <div class="head"><span class="name">${rep.store} — ${rep.date}</span></div>
+        <div class="kv"><span>Total Geral a Entregar</span><b>${fmt(geral.totalAEntregar)} Kz</b></div>
+        <div class="field-wrap"><label class="field">Valor recebido do funcionário</label>
+          <input type="number" id="recv-${rep.id}" value="${geral.totalAEntregar}"></div>
+        <button class="small" data-confirmar-recebimento="${rep.id}">Confirmar recebimento</button>
+      </div>`;
+    }
+    if(isContabilista && c.recebido && !c.depositado){
+      const horas = Math.floor((Date.now()-new Date(c.recebido.em).getTime())/3600000);
+      depositarHtml += `
+      <div class="store-card">
+        <div class="head"><span class="name">${rep.store} — ${rep.date}</span>${horas>24?`<span class="badge">aguardando depósito há ${horas}h</span>`:''}</div>
+        <div class="kv"><span>Recebido</span><b>${fmt(c.recebido.valor)} Kz</b> ${c.recebido.estado==='pendencia'?'<span class="stamp falta">PENDÊNCIA</span>':'<span class="stamp ok">OK</span>'}</div>
+        <div class="row2">
+          <div class="field-wrap"><label class="field">Valor depositado no banco</label><input type="number" id="dep-valor-${rep.id}" value="${c.recebido.valor}"></div>
+          <div class="field-wrap"><label class="field">Referência do depósito</label><input type="text" id="dep-ref-${rep.id}" placeholder="ex: talão nº..."></div>
+        </div>
+        <button class="small" data-confirmar-deposito="${rep.id}">Confirmar depósito</button>
+      </div>`;
+    }
+    if(!isContabilista){
+      const horas = (c.recebido && !c.depositado) ? Math.floor((Date.now()-new Date(c.recebido.em).getTime())/3600000) : null;
+      dashboardHtml += `
+      <div class="store-card">
+        <div class="head"><span class="name">${rep.store} — ${rep.date}</span></div>
+        <div class="kv"><span>Total Geral a Entregar</span><b>${fmt(geral.totalAEntregar)} Kz</b></div>
+        <div class="kv"><span>Recebido pela contabilidade</span><b>${c.recebido?fmt(c.recebido.valor)+' Kz':'— ainda não'}</b> ${c.recebido?(c.recebido.estado==='pendencia'?'<span class="stamp falta">PENDÊNCIA</span>':'<span class="stamp ok">OK</span>'):''}</div>
+        ${c.explicacaoFuncionario?`<div class="kv"><span>Explicação da loja</span><b>${c.explicacaoFuncionario}</b></div>`:''}
+        <div class="kv"><span>Depositado no banco</span><b>${c.depositado?fmt(c.depositado.valor)+' Kz · ref. '+c.depositado.referencia:'— ainda não'}</b></div>
+        ${horas!==null && horas>24?`<div class="banner falta">⚠ Recebido há ${horas}h sem depósito confirmado.</div>`:''}
+      </div>`;
+    }
+  });
+
+  let html='';
+  if(isContabilista){
+    html += `<div class="section-label">Por receber</div>${receberHtml || '<div class="empty">Sem relatórios à espera de recebimento.</div>'}`;
+    html += `<div class="section-label">Recebido — aguardando depósito</div>${depositarHtml || '<div class="empty">Nada à espera de depósito.</div>'}`;
+  } else {
+    html = dashboardHtml || '<div class="empty">Sem relatórios enviados nos últimos 45 dias.</div>';
+  }
+  document.getElementById('cont-body').innerHTML = html;
+
+  document.querySelectorAll('[data-confirmar-recebimento]').forEach(b=>{
+    b.onclick = async ()=>{
+      const id = b.getAttribute('data-confirmar-recebimento');
+      const valor = Number(document.getElementById(`recv-${id}`).value);
+      try{
+        const saved = await api('POST', `/contabilidade/${id}/recebimento`, {valor});
+        const diferenca = saved.contabilidade.recebido.diferenca;
+        toast(diferenca===0 ? 'Recebimento confirmado — bate certo.' : 'Registado como pendência: a loja foi notificada para explicar.');
+      }catch(e){ toast(e.message); }
+      loadContabilidade();
+    };
+  });
+  document.querySelectorAll('[data-confirmar-deposito]').forEach(b=>{
+    b.onclick = async ()=>{
+      const id = b.getAttribute('data-confirmar-deposito');
+      const valor = Number(document.getElementById(`dep-valor-${id}`).value);
+      const referencia = document.getElementById(`dep-ref-${id}`).value.trim();
+      try{
+        await api('POST', `/contabilidade/${id}/deposito`, {valor, referencia});
+        toast('Depósito confirmado.');
+      }catch(e){ toast(e.message); }
+      loadContabilidade();
+    };
+  });
+}
+function attachContabilidadeHandlers(){ loadContabilidade(); }
+
+/* ============================================================
+   PAINEL BFA (supervisor/admin) — visão dedicada ao agente bancário
+============================================================ */
+function viewPainelBFA(){
+  return `
+  <div class="sheet">
+    <h2>Painel BFA — Agente Bancário</h2>
+    <div class="field-wrap" style="max-width:220px;"><label class="field">Data</label><input type="date" id="pbfa-date" value="${S.selectedDate}"></div>
+    <div id="pbfa-body" class="empty">A carregar…</div>
+  </div>`;
+}
+async function loadPainelBFA(){
+  const date = document.getElementById('pbfa-date').value;
+  S.selectedDate = date;
+  const reps = await listReportsForDate(date);
+  if(!reps.length){ document.getElementById('pbfa-body').innerHTML = '<div class="empty">Sem relatórios nesta data.</div>'; return; }
+  let totDep=0, totLev=0, totDif=0;
+  const rows = reps.map(rep=>{
+    const bfa = bfaStatus(rep.bfa);
+    totDep+=Number(rep.bfa.depositos||0); totLev+=Number(rep.bfa.levantamentos||0); totDif+=bfa.diferencaAEntregar;
+    const cont = rep.contabilidade||{};
+    return `
+    <tr>
+      <td>${rep.store}</td>
+      <td class="num-cell">${fmt(rep.bfa.depositos)}</td>
+      <td class="num-cell">${fmt(rep.bfa.levantamentos)}</td>
+      <td class="num-cell">${fmt(bfa.diferencaAEntregar)}</td>
+      <td class="num-cell">${fmt(rep.bfa.cash)}</td>
+      <td class="num-cell">${fmt(rep.bfa.tpa)}</td>
+      <td class="num-cell">${fmt(rep.bfa.transferencia)}</td>
+      <td class="num-cell">${fmt(rep.bfa.depositoBanco)}</td>
+      <td>${bfa.estado==='ok'?'<span class="stamp ok">OK</span>':bfa.estado==='falta'?'<span class="stamp falta">FALTA</span>':'<span class="stamp mais">A MAIS</span>'}</td>
+      <td>${cont.recebido?'<span class="stamp ok">recebido</span>':'<span class="muted">pendente</span>'}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('pbfa-body').innerHTML = `
+    <div class="table-scroll"><table>
+      <thead><tr><th>Loja</th><th>Depósitos</th><th>Levantamentos</th><th>Diferença</th><th>Cash</th><th>TPA</th><th>Transf.</th><th>Depósito banco</th><th>Estado BFA</th><th>Contabilidade</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <hr class="divider">
+    <div class="kv"><span>Total depósitos (todas as lojas)</span><b>${fmt(totDep)} Kz</b></div>
+    <div class="kv"><span>Total levantamentos</span><b>${fmt(totLev)} Kz</b></div>
+    <div class="kv"><span>Total diferença a entregar</span><b>${fmt(totDif)} Kz</b></div>
+  `;
+}
+function attachPainelBFAHandlers(){
+  document.getElementById('pbfa-date').onchange = loadPainelBFA;
+  loadPainelBFA();
+}
+
+/* ============================================================
+   STOCK — visão em tempo real (funcionário: própria loja; ADM/Supervisor: todas)
+============================================================ */
+function viewStock(){
+  return `<div class="sheet"><h2>Stock</h2><div id="stock-body" class="empty">A carregar…</div></div>`;
+}
+async function loadStock(){
+  const el = document.getElementById('stock-body');
+  if(S.session.role==='funcionario'){
+    const r = await getLiveStock(S.session.store); // já vem pronto do servidor: {store, base, linhas}
+    if(!r || !r.linhas || !r.linhas.length){ el.innerHTML = '<div class="empty">Ainda sem histórico para calcular o stock desta loja.</div>'; return; }
+    el.innerHTML = `
+      <p class="hint">Stock atual da loja, com base no relatório de ${r.base?r.base.date:'-'}${r.base && r.base.status==='rascunho'?' (rascunho em curso, atualizado ao vivo)':''}.</p>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Produto</th><th>Stock atual</th><th>Reforços hoje</th></tr></thead>
+        <tbody>${r.linhas.map(l=>`<tr><td>${l.nome}<div class="small-note">${l.unidade}</div></td><td class="num-cell">${fmt(l.stock)}</td><td class="num-cell">${l.reforcosHoje}</td></tr>`).join('')}</tbody>
+      </table></div>`;
+  } else {
+    let cruzado = {lojas:[], produtos:[]};
+    try{ cruzado = await api('GET','/stock'); }catch(e){ toast(e.message); }
+    const { lojas, produtos } = cruzado;
+    const tabela = produtos.map(p=>{
+      const cells = lojas.map(l=>`<td class="num-cell">${p.porLoja[l]!==null && p.porLoja[l]!==undefined ? fmt(p.porLoja[l]) : '—'}</td>`).join('');
+      return `<tr><td>${p.nome}</td>${cells}</tr>`;
+    }).join('');
+    el.innerHTML = `
+      <p class="hint">Stock atual, cruzado entre todas as lojas (tempo real, com base no relatório de hoje ou no último enviado).</p>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Produto</th>${lojas.map(l=>`<th>${l}</th>`).join('')}</tr></thead>
+        <tbody>${tabela || `<tr><td colspan="${lojas.length+1}" class="empty">Sem dados ainda.</td></tr>`}</tbody>
+      </table></div>`;
+  }
+}
+function attachStockHandlers(){ loadStock(); }
+
+/* ============================================================
+   RESUMO MENSAL (supervisor/admin)
+============================================================ */
+function viewResumoMensal(){
+  return `
+  <div class="sheet">
+    <h2>Resumo Mensal</h2>
+    <div class="field-wrap" style="max-width:220px;"><label class="field">Mês</label><input type="month" id="rm-month" value="${S.selectedMonth}"></div>
+    <div id="rm-body" class="empty">A carregar…</div>
+  </div>`;
+}
+async function loadResumoMensal(){
+  const month = document.getElementById('rm-month').value;
+  S.selectedMonth = month;
+  const reps = await listReportsForMonth(month);
+  if(!reps.length){ document.getElementById('rm-body').innerHTML='<div class="empty">Sem relatórios neste mês.</div>'; return; }
+
+  // totais por produto
+  const porProduto = {};
+  const porLoja = {};
+  const porDia = {};
+  let totDepBFA=0, totLevBFA=0, totDifBFA=0;
+  reps.forEach(rep=>{
+    rep.produtos.forEach(p=>{ calcProduto(p);
+      porProduto[p.nome] = (porProduto[p.nome]||0) + Number(p.vendaTotalValor||0);
+    });
+    const totalVendido = rep.produtos.reduce((a,p)=>a+Number(p.vendaTotalValor||0),0);
+    porLoja[rep.store] = (porLoja[rep.store]||0) + totalVendido;
+    porDia[rep.date] = (porDia[rep.date]||0) + totalVendido;
+    const bfa = bfaStatus(rep.bfa);
+    totDepBFA += Number(rep.bfa.depositos||0);
+    totLevBFA += Number(rep.bfa.levantamentos||0);
+    totDifBFA += bfa.diferencaAEntregar;
+  });
+  const rankingProdutos = Object.entries(porProduto).sort((a,b)=>b[1]-a[1]);
+  const rankingLojas = Object.entries(porLoja).sort((a,b)=>b[1]-a[1]);
+  const dias = Object.keys(porDia).sort();
+  const maxDia = Math.max(...dias.map(d=>porDia[d]),1);
+
+  const barChart = `
+    <svg viewBox="0 0 ${dias.length*26} 140" style="width:100%;height:140px;">
+      ${dias.map((d,i)=>{
+        const h = (porDia[d]/maxDia)*110;
+        return `<rect x="${i*26+4}" y="${130-h}" width="16" height="${h}" fill="#2F6B4F"></rect>`;
+      }).join('')}
+    </svg>
+    <div style="display:flex;font-size:9px;color:var(--ink-soft);">
+      ${dias.map(d=>`<div style="width:26px;text-align:center;">${d.slice(8,10)}</div>`).join('')}
+    </div>`;
+
+  document.getElementById('rm-body').innerHTML = `
+    <div class="section-label">Vendas diárias — ${month}</div>
+    ${barChart}
+    <div class="section-label">Ranking de produtos mais vendidos</div>
+    <div class="table-scroll"><table><thead><tr><th>Produto</th><th>Total vendido</th></tr></thead>
+      <tbody>${rankingProdutos.map(([n,v])=>`<tr><td>${n}</td><td class="num-cell">${fmt(v)} Kz</td></tr>`).join('')}</tbody>
+    </table></div>
+    <div class="section-label">Comparação entre lojas</div>
+    <div class="table-scroll"><table><thead><tr><th>Loja</th><th>Total vendido no mês</th></tr></thead>
+      <tbody>${rankingLojas.map(([n,v])=>`<tr><td>${n}</td><td class="num-cell">${fmt(v)} Kz</td></tr>`).join('')}</tbody>
+    </table></div>
+    <div class="section-label">BFA do mês (todas as lojas)</div>
+    <div class="kv"><span>Total depósitos</span><b>${fmt(totDepBFA)} Kz</b></div>
+    <div class="kv"><span>Total levantamentos</span><b>${fmt(totLevBFA)} Kz</b></div>
+    <div class="kv"><span>Total diferença a entregar</span><b>${fmt(totDifBFA)} Kz</b></div>
+    <button class="ghost small" id="export-csv" style="margin-top:12px;">Exportar CSV do mês</button>
+  `;
+  document.getElementById('export-csv').onclick = ()=>{
+    let csv = 'Loja,Data,Produto,Entrada,Venda,Resto\n';
+    reps.forEach(rep=>rep.produtos.forEach(p=>{
+      csv += `${rep.store},${rep.date},${p.nome},${p.entradaTotal},${p.vendaTotalValor},${p.resto}\n`;
+    }));
+    const blob = new Blob([csv],{type:'text/csv'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = `resumo-${month}.csv`; a.click();
+  };
+}
+function attachResumoMensalHandlers(){
+  document.getElementById('rm-month').onchange = loadResumoMensal;
+  loadResumoMensal();
+}
+
+/* ============================================================
+   UTILIZADORES (admin)
+============================================================ */
+function viewUtilizadores(){
+  return `<div class="sheet"><h2>Utilizadores</h2><div id="users-body" class="empty">A carregar…</div></div>`;
+}
+async function loadUtilizadores(){
+  await loadUsers();
+  const rows = S.users.map(u=>`
+    <tr>
+      <td>${u.username}</td>
+      <td><span class="badge role-${u.role}">${ROLE_LABELS[u.role]}</span></td>
+      <td>${u.store||'—'}</td>
+      <td>${u.mustChangePassword?'<span class="badge">deve trocar password</span>':''}</td>
+      <td style="text-align:right;">${u.username!==S.session.username?`<button class="ghost small" data-del-user="${u.username}">Remover</button>`:''}</td>
+    </tr>`).join('');
+  document.getElementById('users-body').innerHTML = `
+    <div class="table-scroll"><table>
+      <thead><tr><th>Utilizador</th><th>Papel</th><th>Loja</th><th></th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <hr class="divider">
+    <div class="section-label">Criar novo utilizador</div>
+    <div class="row4">
+      <div class="field-wrap"><label class="field">Utilizador</label><input type="text" id="uu-name"></div>
+      <div class="field-wrap"><label class="field">Password provisória</label><input type="text" id="uu-pass" value="mudar123"></div>
+      <div class="field-wrap"><label class="field">Papel</label>
+        <select id="uu-role">
+          <option value="funcionario">Funcionário (loja)</option>
+          <option value="contabilista">Contabilista</option>
+          <option value="supervisor">Supervisor</option>
+          <option value="admin">ADM</option>
+        </select>
+      </div>
+      <div class="field-wrap"><label class="field">Nome da loja (se funcionário)</label><input type="text" id="uu-store"></div>
+    </div>
+    <button id="add-user-btn">Criar utilizador</button>
+    <p class="small-note">O utilizador é obrigado a trocar a password no primeiro acesso.</p>
+  `;
+  document.getElementById('add-user-btn').onclick = async ()=>{
+    const username = document.getElementById('uu-name').value.trim();
+    const password = document.getElementById('uu-pass').value;
+    const role = document.getElementById('uu-role').value;
+    const store = document.getElementById('uu-store').value.trim();
+    if(!username || !password){ toast('Preenche utilizador e password.'); return; }
+    if(role==='funcionario' && !store){ toast('Indica o nome da loja.'); return; }
+    try{
+      await api('POST','/users', {username, password, role, store: role==='funcionario'?store:null});
+      toast('Utilizador criado.');
+      loadUtilizadores();
+    }catch(e){ toast(e.message); }
+  };
+  document.querySelectorAll('[data-del-user]').forEach(b=>{
+    b.onclick = async ()=>{
+      if(!confirm('Remover este utilizador?')) return;
+      try{
+        await api('DELETE', `/users/${b.getAttribute('data-del-user')}`);
+        loadUtilizadores();
+      }catch(e){ toast(e.message); }
+    };
+  });
+}
+function attachUtilizadoresHandlers(){ loadUtilizadores(); }
+</script>
+</body>
+</html>
