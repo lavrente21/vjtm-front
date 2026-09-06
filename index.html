@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sistema de Relatórios</title>
+<title>Livro de Caixa — Sistema de Relatórios</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Roboto+Slab:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
@@ -38,7 +38,7 @@ function uid(){ return Math.random().toString(36).slice(2,10); }
    CLIENTE DA API (backend Render + Supabase)
    Troca este valor pelo URL do teu serviço no Render depois do deploy.
 ============================================================ */
-const API_BASE_URL = 'https://vjtm.onrender.com';
+const API_BASE_URL = 'https://SEU-BACKEND.onrender.com';
 
 async function api(method, path, body){
   const headers = {'Content-Type':'application/json'};
@@ -72,7 +72,8 @@ async function getReport(date, store){
 async function saveReport(rep){
   try{
     const saved = await api('PUT', `/reports/${rep.date}/${encodeURIComponent(rep.store)}`, {
-      produtos: rep.produtos, saidas: rep.saidas, bfa: rep.bfa, obs: rep.obs,
+      produtos: rep.produtos, saidas: rep.saidas, bfa: rep.bfa,
+      entregaBfa: rep.entregaBfa, entregaVendas: rep.entregaVendas, obs: rep.obs,
     });
     rep.id = saved.id; // guarda o id devolvido pelo servidor, precisamos dele para pedidos de edição
     return saved;
@@ -164,8 +165,8 @@ function viewLogin(){
   return `
   <div class="login-wrap">
     <div class="brand">
-      <div class="mark">SISTEMA VJTM</div>
-      <div class="tag">Relatório diário · multi-loja · agente bancário</div>
+      <div class="mark">Livro de Caixa</div>
+      <div class="tag">Relatório diário · multi-loja · agente bancário BFA</div>
     </div>
     <div class="sheet">
       <h2>Entrar</h2>
@@ -180,7 +181,7 @@ function viewLogin(){
       </div>
       <div id="login-err" style="color:var(--stamp-red);font-size:12.5px;margin-bottom:10px;"></div>
       <button id="login-btn" style="width:100%;">Entrar</button>
-      <p class="small-note" style="margin-top:14px;">Acesso</p>
+      <p class="small-note" style="margin-top:14px;">Acesso demonstrativo · utilizador: <b>admin</b> · password: <b>admin123</b></p>
     </div>
   </div>`;
 }
@@ -436,29 +437,87 @@ function calcProduto(p){
     p.diferenca = (p.entradaEsperada!==null && p.entradaEsperada!==undefined) ? Number(p.entradaInformada||0) - Number(p.entradaEsperada||0) : 0;
   }
 }
-function bfaStatus(bfa){
-  const diferencaAEntregar = Number(bfa.depositos||0) - Number(bfa.levantamentos||0);
-  const totalEntregue = Number(bfa.cash||0)+Number(bfa.tpa||0)+Number(bfa.transferencia||0)+Number(bfa.depositoBanco||0);
-  const diff = totalEntregue - diferencaAEntregar;
+function bfaEntregaStatus(rep){
+  const bfa = rep.bfa || {};
+  const entrega = rep.entregaBfa || {};
+  const aEntregar = Number(bfa.depositos||0) - Number(bfa.levantamentos||0);
+  const totalEntregue = Number(entrega.cash||0)+Number(entrega.tpa||0)+Number(entrega.transferencia||0)+Number(entrega.depositoBanco||0);
+  const diff = totalEntregue - aEntregar;
   let estado='ok';
   if(diff<0) estado='falta'; else if(diff>0) estado='mais';
-  return {diferencaAEntregar, totalEntregue, diff, estado};
+  return {aEntregar, totalEntregue, diff, estado};
+}
+function vendasEntregaStatus(rep){
+  const entrega = rep.entregaVendas || {};
+  const aEntregar = totalVendidoRep(rep) - totalSaidasRep(rep);
+  const totalEntregue = Number(entrega.cash||0)+Number(entrega.tpa||0)+Number(entrega.transferencia||0)+Number(entrega.depositoBanco||0);
+  const diff = totalEntregue - aEntregar;
+  let estado='ok';
+  if(diff<0) estado='falta'; else if(diff>0) estado='mais';
+  return {aEntregar, totalEntregue, diff, estado};
 }
 function totalVendidoRep(rep){ return rep.produtos.reduce((a,p)=>a+Number(p.vendaTotalValor||0),0); }
 function totalSaidasRep(rep){ return (rep.saidas||[]).reduce((a,s)=>a+Number(s.valor||0),0); }
-/* Total Geral a Entregar = tudo o que a loja deve prestar contas à contabilidade:
-   o que veio do BFA (depósitos - levantamentos) MAIS a receita de vendas de todos
-   os produtos (ZAP, Unitel, Afrimoney, produtos físicos, etc.) MENOS as saídas já
-   pagas em dinheiro. O "Total entregue" continua a ser cash + TPA + transferência +
-   depósito no banco, porque são os mesmos canais por onde qualquer valor sai da loja. */
-function entregaStatusGeral(rep){
-  const bfa = bfaStatus(rep.bfa);
-  const totalAEntregar = totalVendidoRep(rep) - totalSaidasRep(rep) + bfa.diferencaAEntregar;
-  const totalEntregue = bfa.totalEntregue;
-  const diff = totalEntregue - totalAEntregar;
-  let estado='ok';
-  if(diff<0) estado='falta'; else if(diff>0) estado='mais';
-  return {totalAEntregar, totalEntregue, diff, estado, diferencaBFA: bfa.diferencaAEntregar};
+function buildObsAuto(rep){
+  const linhas=[];
+  rep.produtos.forEach(p=>{
+    if(p.variantes && p.variantes.length){
+      p.variantes.forEach(v=>{
+        if(v.entradaEsperada!==null && v.entradaEsperada!==undefined && v.diferenca!==0){
+          linhas.push(`<div class="obs-auto ${v.diferenca>0?'mais':''}">⚠ ${p.nome} (${v.denom}): esperado ${fmt(v.entradaEsperada)}, informado ${fmt(v.entradaInformada)} → ${v.diferenca>0?'entrou a mais '+fmt(v.diferenca):'em falta '+fmt(Math.abs(v.diferenca))}</div>`);
+        }
+      });
+    } else if(p.entradaEsperada!==null && p.diferenca!==0){
+      linhas.push(`<div class="obs-auto ${p.diferenca>0?'mais':''}">⚠ ${p.nome}: esperado ${fmt(p.entradaEsperada)}, informado ${fmt(p.entradaInformada)} → ${p.diferenca>0?'entrou a mais '+fmt(p.diferenca):'em falta '+fmt(Math.abs(p.diferenca))}</div>`);
+    }
+  });
+  return linhas.join('');
+}
+function stampHtml(estado, textoOk, textoFalta, textoMais, diff){
+  if(estado==='ok') return `<span class="stamp ok">${textoOk}</span>`;
+  if(estado==='falta') return `<span class="stamp falta">${textoFalta} — ${fmt(Math.abs(diff))} Kz</span>`;
+  return `<span class="stamp mais">${textoMais} — ${fmt(Math.abs(diff))} Kz</span>`;
+}
+// Recalcula tudo e atualiza só os elementos calculados no ecrã (por id), sem
+// substituir o HTML todo — assim o campo onde a pessoa está a escrever nunca
+// perde o foco nem a posição do cursor, tipo Excel.
+function updateComputedDisplays(){
+  const rep = S.draftReport;
+  if(!rep) return;
+  rep.produtos.forEach(calcProduto);
+  rep.produtos.forEach((p,i)=>{
+    if(p.variantes && p.variantes.length){
+      p.variantes.forEach((v,j)=>{
+        const restoEl = document.getElementById(`resto-${i}-${j}`);
+        if(restoEl) restoEl.textContent = fmt(v.resto);
+        const diffEl = document.getElementById(`diff-${i}-${j}`);
+        if(diffEl) diffEl.innerHTML = (v.entradaEsperada==null) ? '<span class="muted">— primeiro dia —</span>' :
+          (v.diferenca===0?'<span class="stamp ok">BATE CERTO</span>':v.diferenca>0?'<span class="stamp mais">A MAIS</span>':'<span class="stamp falta">EM FALTA</span>');
+      });
+    } else {
+      const restoEl = document.getElementById(`resto-${i}`);
+      if(restoEl) restoEl.textContent = fmt(p.resto);
+      const diffEl = document.getElementById(`diff-${i}`);
+      if(diffEl) diffEl.innerHTML = (p.entradaEsperada===null) ? '<span class="muted">— primeiro dia —</span>' :
+        (p.diferenca===0?'<span class="stamp ok">BATE CERTO</span>':p.diferenca>0?'<span class="stamp mais">A MAIS</span>':'<span class="stamp falta">EM FALTA</span>');
+    }
+  });
+  const obsEl = document.getElementById('obs-auto-container');
+  if(obsEl) obsEl.innerHTML = buildObsAuto(rep);
+
+  const bfaSt = bfaEntregaStatus(rep);
+  const vendasSt = vendasEntregaStatus(rep);
+  const set = (id, val) => { const el=document.getElementById(id); if(el) el.textContent = val; };
+  set('calc-bfa-aentregar', fmt(bfaSt.aEntregar)+' Kz');
+  set('calc-bfa-entregue', fmt(bfaSt.totalEntregue)+' Kz');
+  set('calc-vendas-aentregar', fmt(vendasSt.aEntregar)+' Kz');
+  set('calc-vendas-entregue', fmt(vendasSt.totalEntregue)+' Kz');
+  const stampBfaEl = document.getElementById('stamp-bfa');
+  if(stampBfaEl) stampBfaEl.innerHTML = stampHtml(bfaSt.estado,'BFA CORRETO','BFA EM FALTA','BFA A MAIS', bfaSt.diff);
+  const stampVendasEl = document.getElementById('stamp-vendas');
+  if(stampVendasEl) stampVendasEl.innerHTML = stampHtml(vendasSt.estado,'VENDAS CORRETO','VENDAS EM FALTA','VENDAS A MAIS', vendasSt.diff);
+  set('calc-total-vendido', fmt(totalVendidoRep(rep))+' Kz');
+  set('calc-total-saidas', fmt(totalSaidasRep(rep))+' Kz');
 }
 function viewNovoRelatorio(){
   if(!S.draftReport){
@@ -467,8 +526,8 @@ function viewNovoRelatorio(){
   }
   const rep = S.draftReport;
   rep.produtos.forEach(calcProduto);
-  const bfa = bfaStatus(rep.bfa);
-  const geral = entregaStatusGeral(rep);
+  const bfaSt = bfaEntregaStatus(rep);
+  const vendasSt = vendasEntregaStatus(rep);
   const totalVendido = rep.produtos.reduce((a,p)=>a+Number(p.vendaTotalValor||0),0);
   const totalSaidas = (rep.saidas||[]).reduce((a,s)=>a+Number(s.valor||0),0);
   const locked = isLocked(rep);
@@ -486,8 +545,8 @@ function viewNovoRelatorio(){
           <td><input type="number" data-pv="${i}|${j}" data-f="entradaInformada" value="${v.entradaInformada}" ${locked?'disabled':''} style="width:90px;"></td>
           <td><button class="ghost small" data-reforco-v="${i}|${j}" ${locked?'disabled':''}>+ Reforço (${(v.reforcos||[]).length})</button></td>
           <td><input type="number" data-pv="${i}|${j}" data-f="qtdVendida" value="${v.qtdVendida}" ${locked?'disabled':''} style="width:80px;"></td>
-          <td class="num-cell">${fmt(v.resto)}</td>
-          <td>${diffBadge}</td>
+          <td class="num-cell" id="resto-${i}-${j}">${fmt(v.resto)}</td>
+          <td id="diff-${i}-${j}">${diffBadge}</td>
         </tr>`;
       }).join('');
     }
@@ -506,8 +565,8 @@ function viewNovoRelatorio(){
         <button class="ghost small" data-reforco="${i}" ${locked?'disabled':''}>+ Reforço (${(p.reforcos||[]).length})</button>
       </td>
       <td>${vendaCell}</td>
-      <td class="num-cell">${fmt(p.resto)}</td>
-      <td>${diffBadge}</td>
+      <td class="num-cell" id="resto-${i}">${fmt(p.resto)}</td>
+      <td id="diff-${i}">${diffBadge}</td>
     </tr>`;
   }).join('');
 
@@ -550,44 +609,43 @@ function viewNovoRelatorio(){
       <div class="field-wrap"><label class="field">Depósitos feitos hoje (Kz)</label><input type="number" id="bfa-depositos" value="${rep.bfa.depositos}" ${locked?'disabled':''}></div>
       <div class="field-wrap"><label class="field">Levantamentos feitos hoje (Kz)</label><input type="number" id="bfa-levantamentos" value="${rep.bfa.levantamentos}" ${locked?'disabled':''}></div>
     </div>
-    <div class="kv"><span>Diferença a entregar (Depósitos − Levantamentos)</span><b>${fmt(bfa.diferencaAEntregar)} Kz</b></div>
-    <hr class="divider">
+    <div class="kv"><span>Diferença a entregar (Depósitos − Levantamentos)</span><b id="calc-bfa-aentregar">${fmt(bfaSt.aEntregar)} Kz</b></div>
+    <p class="hint">Entrega do BFA (só desta operação bancária)</p>
     <div class="row4">
-      <div class="field-wrap"><label class="field">Cash em mão</label><input type="number" id="bfa-cash" value="${rep.bfa.cash}" ${locked?'disabled':''}></div>
-      <div class="field-wrap"><label class="field">TPA</label><input type="number" id="bfa-tpa" value="${rep.bfa.tpa}" ${locked?'disabled':''}></div>
-      <div class="field-wrap"><label class="field">Transferência</label><input type="number" id="bfa-transferencia" value="${rep.bfa.transferencia}" ${locked?'disabled':''}></div>
-      <div class="field-wrap"><label class="field">Depósito no banco</label><input type="number" id="bfa-depositoBanco" value="${rep.bfa.depositoBanco}" ${locked?'disabled':''}></div>
+      <div class="field-wrap"><label class="field">Cash em mão</label><input type="number" id="ebfa-cash" value="${rep.entregaBfa.cash}" ${locked?'disabled':''}></div>
+      <div class="field-wrap"><label class="field">TPA</label><input type="number" id="ebfa-tpa" value="${rep.entregaBfa.tpa}" ${locked?'disabled':''}></div>
+      <div class="field-wrap"><label class="field">Transferência</label><input type="number" id="ebfa-transferencia" value="${rep.entregaBfa.transferencia}" ${locked?'disabled':''}></div>
+      <div class="field-wrap"><label class="field">Depósito no banco</label><input type="number" id="ebfa-depositoBanco" value="${rep.entregaBfa.depositoBanco}" ${locked?'disabled':''}></div>
     </div>
-    <hr class="divider">
-    <div class="kv"><span><b>Total Geral a Entregar</b> (vendas de todos os produtos − saídas + diferença BFA)</span><b>${fmt(geral.totalAEntregar)} Kz</b></div>
-    <div class="kv"><span>Total entregue (cash + TPA + transferência + depósito banco)</span><b>${fmt(geral.totalEntregue)} Kz</b></div>
-    <div style="margin-top:8px;">
-      ${geral.estado==='ok'?'<span class="stamp ok">ESTÁ CORRETO</span>':
-        geral.estado==='falta'?`<span class="stamp falta">ESTÁ EM FALTA — ${fmt(Math.abs(geral.diff))} Kz</span>`:
-        `<span class="stamp mais">ESTÁ A MAIS — ${fmt(Math.abs(geral.diff))} Kz</span>`}
+    <div class="kv"><span>Total entregue do BFA</span><b id="calc-bfa-entregue">${fmt(bfaSt.totalEntregue)} Kz</b></div>
+    <div id="stamp-bfa" style="margin-top:8px;">
+      ${bfaSt.estado==='ok'?'<span class="stamp ok">BFA CORRETO</span>':
+        bfaSt.estado==='falta'?`<span class="stamp falta">BFA EM FALTA — ${fmt(Math.abs(bfaSt.diff))} Kz</span>`:
+        `<span class="stamp mais">BFA A MAIS — ${fmt(Math.abs(bfaSt.diff))} Kz</span>`}
+    </div>
+
+    <div class="section-label">Entrega das Vendas (produtos)</div>
+    <div class="kv"><span>A entregar (Total vendido − Saídas)</span><b id="calc-vendas-aentregar">${fmt(vendasSt.aEntregar)} Kz</b></div>
+    <div class="row4">
+      <div class="field-wrap"><label class="field">Cash em mão</label><input type="number" id="evendas-cash" value="${rep.entregaVendas.cash}" ${locked?'disabled':''}></div>
+      <div class="field-wrap"><label class="field">TPA</label><input type="number" id="evendas-tpa" value="${rep.entregaVendas.tpa}" ${locked?'disabled':''}></div>
+      <div class="field-wrap"><label class="field">Transferência</label><input type="number" id="evendas-transferencia" value="${rep.entregaVendas.transferencia}" ${locked?'disabled':''}></div>
+      <div class="field-wrap"><label class="field">Depósito no banco</label><input type="number" id="evendas-depositoBanco" value="${rep.entregaVendas.depositoBanco}" ${locked?'disabled':''}></div>
+    </div>
+    <div class="kv"><span>Total entregue das vendas</span><b id="calc-vendas-entregue">${fmt(vendasSt.totalEntregue)} Kz</b></div>
+    <div id="stamp-vendas" style="margin-top:8px;">
+      ${vendasSt.estado==='ok'?'<span class="stamp ok">VENDAS CORRETO</span>':
+        vendasSt.estado==='falta'?`<span class="stamp falta">VENDAS EM FALTA — ${fmt(Math.abs(vendasSt.diff))} Kz</span>`:
+        `<span class="stamp mais">VENDAS A MAIS — ${fmt(Math.abs(vendasSt.diff))} Kz</span>`}
     </div>
 
     <div class="section-label">Observações</div>
-    ${(function(){
-      const linhas=[];
-      rep.produtos.forEach(p=>{
-        if(p.variantes && p.variantes.length){
-          p.variantes.forEach(v=>{
-            if(v.entradaEsperada!==null && v.entradaEsperada!==undefined && v.diferenca!==0){
-              linhas.push(`<div class="obs-auto ${v.diferenca>0?'mais':''}">⚠ ${p.nome} (${v.denom}): esperado ${fmt(v.entradaEsperada)}, informado ${fmt(v.entradaInformada)} → ${v.diferenca>0?'entrou a mais '+fmt(v.diferenca):'em falta '+fmt(Math.abs(v.diferenca))}</div>`);
-            }
-          });
-        } else if(p.entradaEsperada!==null && p.diferenca!==0){
-          linhas.push(`<div class="obs-auto ${p.diferenca>0?'mais':''}">⚠ ${p.nome}: esperado ${fmt(p.entradaEsperada)}, informado ${fmt(p.entradaInformada)} → ${p.diferenca>0?'entrou a mais '+fmt(p.diferenca):'em falta '+fmt(Math.abs(p.diferenca))}</div>`);
-        }
-      });
-      return linhas.join('');
-    })()}
+    <div id="obs-auto-container">${buildObsAuto(rep)}</div>
     <textarea id="rep-obs" rows="3" placeholder="Observações adicionais…" ${locked?'disabled':''}>${rep.obs||''}</textarea>
 
     <hr class="divider">
-    <div class="kv"><span>Total vendido</span><b>${fmt(totalVendido)} Kz</b></div>
-    <div class="kv"><span>Total de saídas</span><b>${fmt(totalSaidas)} Kz</b></div>
+    <div class="kv"><span>Total vendido</span><b id="calc-total-vendido">${fmt(totalVendido)} Kz</b></div>
+    <div class="kv"><span>Total de saídas</span><b id="calc-total-saidas">${fmt(totalSaidas)} Kz</b></div>
 
     ${locked ? lockedBanner(rep) : `
       <div style="margin-top:16px;display:flex;gap:10px;">
@@ -636,6 +694,7 @@ function attachNovoRelatorioHandlers(){
     inp.oninput = ()=>{
       const i = Number(inp.getAttribute('data-p')); const f = inp.getAttribute('data-f');
       rep.produtos[i][f] = inp.value;
+      updateComputedDisplays();
       persistDraftSilently();
     };
   });
@@ -644,30 +703,16 @@ function attachNovoRelatorioHandlers(){
       const [i,j] = inp.getAttribute('data-pv').split('|').map(Number);
       const f = inp.getAttribute('data-f');
       rep.produtos[i].variantes[j][f] = inp.value;
+      updateComputedDisplays();
       persistDraftSilently();
     };
   });
   document.querySelectorAll('[data-reforco]').forEach(b=>{
-    b.onclick = ()=>{
-      const i = Number(b.getAttribute('data-reforco'));
-      const valor = prompt('Valor/quantidade do reforço:');
-      if(valor===null || valor==='') return;
-      const p = rep.produtos[i];
-      p.reforcos = p.reforcos||[];
-      p.reforcos.push({valor:Number(valor), hora:nowIso()});
-      persistDraftSilently(); render();
-    };
+    b.onclick = ()=> abrirReforcos(Number(b.getAttribute('data-reforco')), null);
   });
   document.querySelectorAll('[data-reforco-v]').forEach(b=>{
-    b.onclick = ()=>{
-      const [i,j] = b.getAttribute('data-reforco-v').split('|').map(Number);
-      const valor = prompt('Quantidade reforçada nesta denominação:');
-      if(valor===null || valor==='') return;
-      const v = rep.produtos[i].variantes[j];
-      v.reforcos = v.reforcos||[];
-      v.reforcos.push({valor:Number(valor), hora:nowIso()});
-      persistDraftSilently(); render();
-    };
+    const [i,j] = b.getAttribute('data-reforco-v').split('|').map(Number);
+    b.onclick = ()=> abrirReforcos(i, j);
   });
   document.querySelectorAll('[data-linhas]').forEach(b=>{
     b.onclick = ()=>{
@@ -688,15 +733,22 @@ function attachNovoRelatorioHandlers(){
     inp.oninput = ()=>{
       const i=Number(inp.getAttribute('data-saida')); const f=inp.getAttribute('data-f');
       rep.saidas[i][f] = f==='valor'? Number(inp.value): inp.value;
+      updateComputedDisplays();
       persistDraftSilently();
     };
   });
   document.querySelectorAll('[data-rm-saida]').forEach(b=>{
     b.onclick = ()=>{ rep.saidas.splice(Number(b.getAttribute('data-rm-saida')),1); render(); };
   });
-  ['depositos','levantamentos','cash','tpa','transferencia','depositoBanco'].forEach(f=>{
+  ['depositos','levantamentos'].forEach(f=>{
     const el = document.getElementById('bfa-'+f);
-    if(el) el.oninput = ()=>{ rep.bfa[f]=Number(el.value); persistDraftSilently(); renderInPlaceBfa(); };
+    if(el) el.oninput = ()=>{ rep.bfa[f]=Number(el.value); updateComputedDisplays(); persistDraftSilently(); };
+  });
+  ['cash','tpa','transferencia','depositoBanco'].forEach(f=>{
+    const elB = document.getElementById('ebfa-'+f);
+    if(elB) elB.oninput = ()=>{ rep.entregaBfa[f]=Number(elB.value); updateComputedDisplays(); persistDraftSilently(); };
+    const elV = document.getElementById('evendas-'+f);
+    if(elV) elV.oninput = ()=>{ rep.entregaVendas[f]=Number(elV.value); updateComputedDisplays(); persistDraftSilently(); };
   });
   const obsEl = document.getElementById('rep-obs');
   if(obsEl) obsEl.oninput = ()=>{ rep.obs = obsEl.value; persistDraftSilently(); };
@@ -720,6 +772,61 @@ function attachNovoRelatorioHandlers(){
   };
 }
 function renderInPlaceBfa(){ /* recalculo simples via re-render completo é suficiente */ }
+function getReforcoArray(i,j){
+  const p = S.draftReport.produtos[i];
+  return j===null ? (p.reforcos = p.reforcos||[]) : (p.variantes[j].reforcos = p.variantes[j].reforcos||[]);
+}
+function abrirReforcos(i, j){
+  const overlay = document.createElement('div');
+  overlay.className='modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-box">
+      <h3>Reforços</h3>
+      <div id="reforco-list"></div>
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <input type="number" id="reforco-novo-valor" placeholder="Valor/quantidade" style="flex:1;">
+        <button class="small" id="reforco-add-btn">Adicionar</button>
+      </div>
+      <div style="margin-top:14px;text-align:right;"><button class="ghost small" id="reforco-fechar">Fechar</button></div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  function renderLista(){
+    const arr = getReforcoArray(i,j);
+    document.getElementById('reforco-list').innerHTML = arr.length ? arr.map((r,idx)=>`
+      <div class="reforco-row">
+        <span class="hora">${fmtTime(r.hora)}</span>
+        <input type="number" value="${r.valor}" data-ridx="${idx}">
+        <button class="ghost small" data-rmreforco="${idx}">remover</button>
+      </div>`).join('') : '<p class="muted small-note">Sem reforços ainda.</p>';
+
+    document.querySelectorAll('#reforco-list input[data-ridx]').forEach(inp=>{
+      inp.oninput = ()=>{
+        arr[Number(inp.getAttribute('data-ridx'))].valor = Number(inp.value);
+        updateComputedDisplays(); persistDraftSilently();
+      };
+    });
+    document.querySelectorAll('[data-rmreforco]').forEach(b=>{
+      b.onclick = ()=>{
+        arr.splice(Number(b.getAttribute('data-rmreforco')),1);
+        updateComputedDisplays(); persistDraftSilently();
+        renderLista();
+      };
+    });
+  }
+  renderLista();
+
+  document.getElementById('reforco-add-btn').onclick = ()=>{
+    const val = document.getElementById('reforco-novo-valor').value;
+    if(val===''){ return; }
+    const arr = getReforcoArray(i,j);
+    arr.push({valor:Number(val), hora:nowIso()});
+    document.getElementById('reforco-novo-valor').value='';
+    updateComputedDisplays(); persistDraftSilently();
+    renderLista();
+  };
+  document.getElementById('reforco-fechar').onclick = ()=>{ overlay.remove(); render(); };
+}
 let _persistTimer = null;
 function persistDraftSilently(){
   if(_persistTimer) clearTimeout(_persistTimer);
@@ -728,10 +835,12 @@ function persistDraftSilently(){
 
 function confirmarEnvio(rep){
   rep.produtos.forEach(calcProduto);
-  const geral = entregaStatusGeral(rep);
+  const bfaSt = bfaEntregaStatus(rep);
+  const vendasSt = vendasEntregaStatus(rep);
   const totalVendido = totalVendidoRep(rep);
   const semMovimento = rep.produtos.filter(p=>Number(p.vendaTotalValor||0)===0).map(p=>p.nome);
-  const msg = `Confirmar envio do relatório?\n\nTotal vendido: ${fmt(totalVendido)} Kz\nTotal Geral a Entregar: ${fmt(geral.totalAEntregar)} Kz\nEstado: ${geral.estado==='ok'?'Correto':geral.estado==='falta'?'Em falta '+fmt(Math.abs(geral.diff))+' Kz':'A mais '+fmt(Math.abs(geral.diff))+' Kz'}\n${semMovimento.length?'Sem venda hoje: '+semMovimento.join(', '):'Todos os produtos tiveram movimento.'}`;
+  const txt = (s)=> s.estado==='ok'?'Correto':s.estado==='falta'?'Em falta '+fmt(Math.abs(s.diff))+' Kz':'A mais '+fmt(Math.abs(s.diff))+' Kz';
+  const msg = `Confirmar envio do relatório?\n\nTotal vendido: ${fmt(totalVendido)} Kz\nBFA: ${txt(bfaSt)}\nVendas: ${txt(vendasSt)}\n${semMovimento.length?'Sem venda hoje: '+semMovimento.join(', '):'Todos os produtos tiveram movimento.'}`;
   if(!confirm(msg)) return;
   enviarRelatorio(rep);
 }
@@ -779,10 +888,29 @@ function attachMeusRelatoriosHandlers(){
 function viewRecibo(rep){
   if(!rep) return '<div class="empty">Sem recibo para mostrar.</div>';
   rep.produtos.forEach(calcProduto);
-  const geral = entregaStatusGeral(rep);
+  const bfaSt = bfaEntregaStatus(rep);
+  const vendasSt = vendasEntregaStatus(rep);
   const totalVendido = totalVendidoRep(rep);
   const totalSaidas = totalSaidasRep(rep);
-  const cont = rep.contabilidade || {recebido:null, explicacaoFuncionario:null, depositado:null};
+  const cont = rep.contabilidade || {bfa:{recebido:null,explicacaoFuncionario:null,depositado:null}, vendas:{recebido:null,explicacaoFuncionario:null,depositado:null}};
+  const contBloco = (tipo, titulo)=>{
+    const c = cont[tipo] || {recebido:null,explicacaoFuncionario:null,depositado:null};
+    return `
+      <div class="section-label">Contabilidade — ${titulo}</div>
+      ${c.recebido ? `
+        <div class="kv"><span>Recebido pela contabilidade</span><b>${fmt(c.recebido.valor)} Kz</b> ${c.recebido.estado==='pendencia'?'<span class="stamp falta">PENDÊNCIA</span>':'<span class="stamp ok">OK</span>'}</div>
+        ${c.recebido.estado==='pendencia' ? `
+          <div class="banner falta">⚠ Diferença de ${fmt(Math.abs(c.recebido.diferenca))} Kz (${c.recebido.diferenca>0?'entregou a mais':'entregou a menos'}). Por favor explica abaixo.</div>
+          ${c.explicacaoFuncionario ? `<div class="kv"><span>Explicação enviada</span><b>${c.explicacaoFuncionario}</b></div>` :
+            (S.session.role==='funcionario' ? `
+              <div class="field-wrap"><label class="field">Explica a diferença (${titulo})</label><textarea id="explicacao-${tipo}" rows="2"></textarea></div>
+              <button class="secondary small" data-salvar-explicacao="${tipo}">Guardar explicação</button>
+            ` : '<p class="muted small-note">Aguardando explicação da loja.</p>')}
+        ` : ''}
+        <div class="kv" style="margin-top:8px;"><span>Depositado no banco</span><b>${c.depositado?fmt(c.depositado.valor)+' Kz · ref. '+c.depositado.referencia:'ainda não'}</b></div>
+      ` : '<p class="muted">A contabilidade ainda não confirmou o recebimento.</p>'}
+    `;
+  };
   return `
   <div class="sheet">
     <h2>Recibo do Relatório — ${rep.store}</h2>
@@ -813,29 +941,24 @@ function viewRecibo(rep){
         }).join('')}
       </tbody>
     </table></div>
-    <div class="section-label">BFA e Entrega Geral</div>
-    <div class="kv"><span>Diferença BFA (depósitos − levantamentos)</span><b>${fmt(geral.diferencaBFA)} Kz</b></div>
-    <div class="kv"><span><b>Total Geral a Entregar</b> (vendas + BFA − saídas)</span><b>${fmt(geral.totalAEntregar)} Kz</b></div>
-    <div class="kv"><span>Total entregue</span><b>${fmt(geral.totalEntregue)} Kz</b></div>
-    <div style="margin-top:8px;">${geral.estado==='ok'?'<span class="stamp ok">CORRETO</span>':geral.estado==='falta'?`<span class="stamp falta">EM FALTA ${fmt(Math.abs(geral.diff))} Kz</span>`:`<span class="stamp mais">A MAIS ${fmt(Math.abs(geral.diff))} Kz</span>`}</div>
+
+    <div class="section-label">BFA</div>
+    <div class="kv"><span>A entregar (Depósitos − Levantamentos)</span><b>${fmt(bfaSt.aEntregar)} Kz</b></div>
+    <div class="kv"><span>Total entregue</span><b>${fmt(bfaSt.totalEntregue)} Kz</b></div>
+    <div style="margin-top:8px;">${bfaSt.estado==='ok'?'<span class="stamp ok">CORRETO</span>':bfaSt.estado==='falta'?`<span class="stamp falta">EM FALTA ${fmt(Math.abs(bfaSt.diff))} Kz</span>`:`<span class="stamp mais">A MAIS ${fmt(Math.abs(bfaSt.diff))} Kz</span>`}</div>
+
+    <div class="section-label">Vendas</div>
+    <div class="kv"><span>A entregar (Total vendido − Saídas)</span><b>${fmt(vendasSt.aEntregar)} Kz</b></div>
+    <div class="kv"><span>Total entregue</span><b>${fmt(vendasSt.totalEntregue)} Kz</b></div>
+    <div style="margin-top:8px;">${vendasSt.estado==='ok'?'<span class="stamp ok">CORRETO</span>':vendasSt.estado==='falta'?`<span class="stamp falta">EM FALTA ${fmt(Math.abs(vendasSt.diff))} Kz</span>`:`<span class="stamp mais">A MAIS ${fmt(Math.abs(vendasSt.diff))} Kz</span>`}</div>
+
     <hr class="divider">
     <div class="kv"><span>Total vendido</span><b>${fmt(totalVendido)} Kz</b></div>
     <div class="kv"><span>Total de saídas</span><b>${fmt(totalSaidas)} Kz</b></div>
     ${rep.obs?`<div class="section-label">Observações</div><p>${rep.obs}</p>`:''}
 
-    <div class="section-label">Contabilidade</div>
-    ${cont.recebido ? `
-      <div class="kv"><span>Recebido pela contabilidade</span><b>${fmt(cont.recebido.valor)} Kz</b> ${cont.recebido.estado==='pendencia'?'<span class="stamp falta">PENDÊNCIA</span>':'<span class="stamp ok">OK</span>'}</div>
-      ${cont.recebido.estado==='pendencia' ? `
-        <div class="banner falta">⚠ Diferença de ${fmt(Math.abs(cont.recebido.diferenca))} Kz entre o recebido e o Total Geral a Entregar (${cont.recebido.diferenca>0?'entregou a mais':'entregou a menos'}). Por favor explica abaixo.</div>
-        ${cont.explicacaoFuncionario ? `<div class="kv"><span>Explicação enviada</span><b>${cont.explicacaoFuncionario}</b></div>` :
-          (S.session.role==='funcionario' ? `
-            <div class="field-wrap"><label class="field">Explica a diferença</label><textarea id="explicacao-pendencia" rows="2"></textarea></div>
-            <button class="secondary small" id="salvar-explicacao">Guardar explicação</button>
-          ` : '<p class="muted small-note">Aguardando explicação da loja.</p>')}
-      ` : ''}
-      <div class="kv" style="margin-top:8px;"><span>Depositado no banco</span><b>${cont.depositado?fmt(cont.depositado.valor)+' Kz · ref. '+cont.depositado.referencia:'ainda não'}</b></div>
-    ` : '<p class="muted">A contabilidade ainda não confirmou o recebimento deste relatório.</p>'}
+    ${contBloco('bfa','BFA')}
+    ${contBloco('vendas','Vendas')}
 
     <div style="margin-top:16px;"><button class="ghost" id="voltar-btn">Voltar</button></div>
   </div>`;
@@ -843,18 +966,20 @@ function viewRecibo(rep){
 function attachReciboHandlers(){
   const b = document.getElementById('voltar-btn');
   if(b) b.onclick = ()=>{ S.view = S.session.role==='funcionario'?'meus-relatorios':(S.session.role==='contabilista'?'contabilidade':'relatorios-dia'); render(); };
-  const expBtn = document.getElementById('salvar-explicacao');
-  if(expBtn) expBtn.onclick = async ()=>{
-    const rep = S.reciboAtual;
-    const texto = document.getElementById('explicacao-pendencia').value.trim();
-    if(!texto){ toast('Escreve a explicação.'); return; }
-    try{
-      const updated = await api('POST', `/contabilidade/${rep.id}/explicacao`, {texto});
-      S.reciboAtual = updated;
-      toast('Explicação guardada.');
-      render();
-    }catch(e){ toast(e.message); }
-  };
+  document.querySelectorAll('[data-salvar-explicacao]').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const tipo = btn.getAttribute('data-salvar-explicacao');
+      const rep = S.reciboAtual;
+      const texto = document.getElementById(`explicacao-${tipo}`).value.trim();
+      if(!texto){ toast('Escreve a explicação.'); return; }
+      try{
+        const updated = await api('POST', `/contabilidade/${rep.id}/explicacao`, {tipo, texto});
+        S.reciboAtual = updated;
+        toast('Explicação guardada.');
+        render();
+      }catch(e){ toast(e.message); }
+    };
+  });
 }
 
 /* ============================================================
@@ -881,15 +1006,17 @@ async function loadRelatoriosDia(){
   let totalGeral=0, totalSaidasGeral=0;
   reps.forEach(rep=>{
     rep.produtos.forEach(calcProduto);
-    const geral = entregaStatusGeral(rep);
+    const bfaSt = bfaEntregaStatus(rep);
+    const vendasSt = vendasEntregaStatus(rep);
     const totalVendido = totalVendidoRep(rep);
     const totalSaidas = totalSaidasRep(rep);
     totalGeral += totalVendido; totalSaidasGeral += totalSaidas;
+    const selo = (s,nome)=> s.estado==='ok'?`<span class="stamp ok">${nome} OK</span>`:s.estado==='falta'?`<span class="stamp falta">${nome} FALTA</span>`:`<span class="stamp mais">${nome} A MAIS</span>`;
     html += `
       <div class="store-card">
         <div class="head">
           <span class="name">${rep.store}</span>
-          <span>${geral.estado==='ok'?'<span class="stamp ok">ENTREGA OK</span>':geral.estado==='falta'?'<span class="stamp falta">ENTREGA EM FALTA</span>':'<span class="stamp mais">ENTREGA A MAIS</span>'}</span>
+          <span>${selo(bfaSt,'BFA')} ${selo(vendasSt,'VENDAS')}</span>
         </div>
         <div class="kv"><span>Total vendido</span><b>${fmt(totalVendido)} Kz</b></div>
         <div class="kv"><span>Total de saídas</span><b>${fmt(totalSaidas)} Kz</b></div>
@@ -990,64 +1117,64 @@ async function loadContabilidade(){
   let reps = [];
   try{ reps = await api('GET', '/contabilidade/pendentes?dias=45'); }catch(e){ toast(e.message); }
 
-  let receberHtml='', depositarHtml='', dashboardHtml='';
-  reps.forEach(rep=>{
-    const geral = rep.geral; // já vem calculado do servidor
-    const c = rep.contabilidade || {recebido:null, explicacaoFuncionario:null, depositado:null};
+  function secao(tipo, titulo){
+    let receberHtml='', depositarHtml='', dashboardHtml='';
+    reps.forEach(rep=>{
+      const geral = tipo==='bfa' ? rep.geralBfa : rep.geralVendas;
+      const c = (rep.contabilidade && rep.contabilidade[tipo]) || {recebido:null, explicacaoFuncionario:null, depositado:null};
 
-    if(isContabilista && !c.recebido){
-      receberHtml += `
-      <div class="store-card">
-        <div class="head"><span class="name">${rep.store} — ${rep.date}</span></div>
-        <div class="kv"><span>Total Geral a Entregar</span><b>${fmt(geral.totalAEntregar)} Kz</b></div>
-        <div class="field-wrap"><label class="field">Valor recebido do funcionário</label>
-          <input type="number" id="recv-${rep.id}" value="${geral.totalAEntregar}"></div>
-        <button class="small" data-confirmar-recebimento="${rep.id}">Confirmar recebimento</button>
-      </div>`;
+      if(isContabilista && !c.recebido){
+        receberHtml += `
+        <div class="store-card">
+          <div class="head"><span class="name">${rep.store} — ${rep.date}</span></div>
+          <div class="kv"><span>A entregar (${titulo})</span><b>${fmt(geral.aEntregar)} Kz</b></div>
+          <div class="field-wrap"><label class="field">Valor recebido do funcionário</label>
+            <input type="number" id="recv-${tipo}-${rep.id}" value="${geral.aEntregar}"></div>
+          <button class="small" data-confirmar-recebimento="${tipo}|${rep.id}">Confirmar recebimento</button>
+        </div>`;
+      }
+      if(isContabilista && c.recebido && !c.depositado){
+        const horas = Math.floor((Date.now()-new Date(c.recebido.em).getTime())/3600000);
+        depositarHtml += `
+        <div class="store-card">
+          <div class="head"><span class="name">${rep.store} — ${rep.date}</span>${horas>24?`<span class="badge">aguardando depósito há ${horas}h</span>`:''}</div>
+          <div class="kv"><span>Recebido</span><b>${fmt(c.recebido.valor)} Kz</b> ${c.recebido.estado==='pendencia'?'<span class="stamp falta">PENDÊNCIA</span>':'<span class="stamp ok">OK</span>'}</div>
+          <div class="row2">
+            <div class="field-wrap"><label class="field">Valor depositado no banco</label><input type="number" id="dep-valor-${tipo}-${rep.id}" value="${c.recebido.valor}"></div>
+            <div class="field-wrap"><label class="field">Referência do depósito</label><input type="text" id="dep-ref-${tipo}-${rep.id}" placeholder="ex: talão nº..."></div>
+          </div>
+          <button class="small" data-confirmar-deposito="${tipo}|${rep.id}">Confirmar depósito</button>
+        </div>`;
+      }
+      if(!isContabilista){
+        const horas = (c.recebido && !c.depositado) ? Math.floor((Date.now()-new Date(c.recebido.em).getTime())/3600000) : null;
+        dashboardHtml += `
+        <div class="store-card">
+          <div class="head"><span class="name">${rep.store} — ${rep.date}</span></div>
+          <div class="kv"><span>A entregar (${titulo})</span><b>${fmt(geral.aEntregar)} Kz</b></div>
+          <div class="kv"><span>Recebido pela contabilidade</span><b>${c.recebido?fmt(c.recebido.valor)+' Kz':'— ainda não'}</b> ${c.recebido?(c.recebido.estado==='pendencia'?'<span class="stamp falta">PENDÊNCIA</span>':'<span class="stamp ok">OK</span>'):''}</div>
+          ${c.explicacaoFuncionario?`<div class="kv"><span>Explicação da loja</span><b>${c.explicacaoFuncionario}</b></div>`:''}
+          <div class="kv"><span>Depositado no banco</span><b>${c.depositado?fmt(c.depositado.valor)+' Kz · ref. '+c.depositado.referencia:'— ainda não'}</b></div>
+          ${horas!==null && horas>24?`<div class="banner falta">⚠ Recebido há ${horas}h sem depósito confirmado.</div>`:''}
+        </div>`;
+      }
+    });
+    if(isContabilista){
+      return `<div class="section-label">${titulo} — Por receber</div>${receberHtml || '<div class="empty">Sem relatórios à espera de recebimento.</div>'}
+              <div class="section-label">${titulo} — Recebido, aguardando depósito</div>${depositarHtml || '<div class="empty">Nada à espera de depósito.</div>'}`;
     }
-    if(isContabilista && c.recebido && !c.depositado){
-      const horas = Math.floor((Date.now()-new Date(c.recebido.em).getTime())/3600000);
-      depositarHtml += `
-      <div class="store-card">
-        <div class="head"><span class="name">${rep.store} — ${rep.date}</span>${horas>24?`<span class="badge">aguardando depósito há ${horas}h</span>`:''}</div>
-        <div class="kv"><span>Recebido</span><b>${fmt(c.recebido.valor)} Kz</b> ${c.recebido.estado==='pendencia'?'<span class="stamp falta">PENDÊNCIA</span>':'<span class="stamp ok">OK</span>'}</div>
-        <div class="row2">
-          <div class="field-wrap"><label class="field">Valor depositado no banco</label><input type="number" id="dep-valor-${rep.id}" value="${c.recebido.valor}"></div>
-          <div class="field-wrap"><label class="field">Referência do depósito</label><input type="text" id="dep-ref-${rep.id}" placeholder="ex: talão nº..."></div>
-        </div>
-        <button class="small" data-confirmar-deposito="${rep.id}">Confirmar depósito</button>
-      </div>`;
-    }
-    if(!isContabilista){
-      const horas = (c.recebido && !c.depositado) ? Math.floor((Date.now()-new Date(c.recebido.em).getTime())/3600000) : null;
-      dashboardHtml += `
-      <div class="store-card">
-        <div class="head"><span class="name">${rep.store} — ${rep.date}</span></div>
-        <div class="kv"><span>Total Geral a Entregar</span><b>${fmt(geral.totalAEntregar)} Kz</b></div>
-        <div class="kv"><span>Recebido pela contabilidade</span><b>${c.recebido?fmt(c.recebido.valor)+' Kz':'— ainda não'}</b> ${c.recebido?(c.recebido.estado==='pendencia'?'<span class="stamp falta">PENDÊNCIA</span>':'<span class="stamp ok">OK</span>'):''}</div>
-        ${c.explicacaoFuncionario?`<div class="kv"><span>Explicação da loja</span><b>${c.explicacaoFuncionario}</b></div>`:''}
-        <div class="kv"><span>Depositado no banco</span><b>${c.depositado?fmt(c.depositado.valor)+' Kz · ref. '+c.depositado.referencia:'— ainda não'}</b></div>
-        ${horas!==null && horas>24?`<div class="banner falta">⚠ Recebido há ${horas}h sem depósito confirmado.</div>`:''}
-      </div>`;
-    }
-  });
-
-  let html='';
-  if(isContabilista){
-    html += `<div class="section-label">Por receber</div>${receberHtml || '<div class="empty">Sem relatórios à espera de recebimento.</div>'}`;
-    html += `<div class="section-label">Recebido — aguardando depósito</div>${depositarHtml || '<div class="empty">Nada à espera de depósito.</div>'}`;
-  } else {
-    html = dashboardHtml || '<div class="empty">Sem relatórios enviados nos últimos 45 dias.</div>';
+    return `<div class="section-label">${titulo}</div>${dashboardHtml || '<div class="empty">Sem relatórios enviados nos últimos 45 dias.</div>'}`;
   }
-  document.getElementById('cont-body').innerHTML = html;
+
+  document.getElementById('cont-body').innerHTML = secao('bfa','BFA') + secao('vendas','Vendas');
 
   document.querySelectorAll('[data-confirmar-recebimento]').forEach(b=>{
     b.onclick = async ()=>{
-      const id = b.getAttribute('data-confirmar-recebimento');
-      const valor = Number(document.getElementById(`recv-${id}`).value);
+      const [tipo, id] = b.getAttribute('data-confirmar-recebimento').split('|');
+      const valor = Number(document.getElementById(`recv-${tipo}-${id}`).value);
       try{
-        const saved = await api('POST', `/contabilidade/${id}/recebimento`, {valor});
-        const diferenca = saved.contabilidade.recebido.diferenca;
+        const saved = await api('POST', `/contabilidade/${id}/recebimento`, {tipo, valor});
+        const diferenca = saved.contabilidade[tipo].recebido.diferenca;
         toast(diferenca===0 ? 'Recebimento confirmado — bate certo.' : 'Registado como pendência: a loja foi notificada para explicar.');
       }catch(e){ toast(e.message); }
       loadContabilidade();
@@ -1055,11 +1182,11 @@ async function loadContabilidade(){
   });
   document.querySelectorAll('[data-confirmar-deposito]').forEach(b=>{
     b.onclick = async ()=>{
-      const id = b.getAttribute('data-confirmar-deposito');
-      const valor = Number(document.getElementById(`dep-valor-${id}`).value);
-      const referencia = document.getElementById(`dep-ref-${id}`).value.trim();
+      const [tipo, id] = b.getAttribute('data-confirmar-deposito').split('|');
+      const valor = Number(document.getElementById(`dep-valor-${tipo}-${id}`).value);
+      const referencia = document.getElementById(`dep-ref-${tipo}-${id}`).value.trim();
       try{
-        await api('POST', `/contabilidade/${id}/deposito`, {valor, referencia});
+        await api('POST', `/contabilidade/${id}/deposito`, {tipo, valor, referencia});
         toast('Depósito confirmado.');
       }catch(e){ toast(e.message); }
       loadContabilidade();
@@ -1067,6 +1194,7 @@ async function loadContabilidade(){
   });
 }
 function attachContabilidadeHandlers(){ loadContabilidade(); }
+
 
 /* ============================================================
    PAINEL BFA (supervisor/admin) — visão dedicada ao agente bancário
@@ -1086,21 +1214,21 @@ async function loadPainelBFA(){
   if(!reps.length){ document.getElementById('pbfa-body').innerHTML = '<div class="empty">Sem relatórios nesta data.</div>'; return; }
   let totDep=0, totLev=0, totDif=0;
   const rows = reps.map(rep=>{
-    const bfa = bfaStatus(rep.bfa);
-    totDep+=Number(rep.bfa.depositos||0); totLev+=Number(rep.bfa.levantamentos||0); totDif+=bfa.diferencaAEntregar;
+    const bfa = bfaEntregaStatus(rep);
+    totDep+=Number(rep.bfa.depositos||0); totLev+=Number(rep.bfa.levantamentos||0); totDif+=bfa.aEntregar;
     const cont = rep.contabilidade||{};
     return `
     <tr>
       <td>${rep.store}</td>
       <td class="num-cell">${fmt(rep.bfa.depositos)}</td>
       <td class="num-cell">${fmt(rep.bfa.levantamentos)}</td>
-      <td class="num-cell">${fmt(bfa.diferencaAEntregar)}</td>
-      <td class="num-cell">${fmt(rep.bfa.cash)}</td>
-      <td class="num-cell">${fmt(rep.bfa.tpa)}</td>
-      <td class="num-cell">${fmt(rep.bfa.transferencia)}</td>
-      <td class="num-cell">${fmt(rep.bfa.depositoBanco)}</td>
+      <td class="num-cell">${fmt(bfa.aEntregar)}</td>
+      <td class="num-cell">${fmt(rep.entregaBfa.cash)}</td>
+      <td class="num-cell">${fmt(rep.entregaBfa.tpa)}</td>
+      <td class="num-cell">${fmt(rep.entregaBfa.transferencia)}</td>
+      <td class="num-cell">${fmt(rep.entregaBfa.depositoBanco)}</td>
       <td>${bfa.estado==='ok'?'<span class="stamp ok">OK</span>':bfa.estado==='falta'?'<span class="stamp falta">FALTA</span>':'<span class="stamp mais">A MAIS</span>'}</td>
-      <td>${cont.recebido?'<span class="stamp ok">recebido</span>':'<span class="muted">pendente</span>'}</td>
+      <td>${cont.bfa && cont.bfa.recebido?'<span class="stamp ok">recebido</span>':'<span class="muted">pendente</span>'}</td>
     </tr>`;
   }).join('');
   document.getElementById('pbfa-body').innerHTML = `
@@ -1183,10 +1311,10 @@ async function loadResumoMensal(){
     const totalVendido = rep.produtos.reduce((a,p)=>a+Number(p.vendaTotalValor||0),0);
     porLoja[rep.store] = (porLoja[rep.store]||0) + totalVendido;
     porDia[rep.date] = (porDia[rep.date]||0) + totalVendido;
-    const bfa = bfaStatus(rep.bfa);
+    const bfa = bfaEntregaStatus(rep);
     totDepBFA += Number(rep.bfa.depositos||0);
     totLevBFA += Number(rep.bfa.levantamentos||0);
-    totDifBFA += bfa.diferencaAEntregar;
+    totDifBFA += bfa.aEntregar;
   });
   const rankingProdutos = Object.entries(porProduto).sort((a,b)=>b[1]-a[1]);
   const rankingLojas = Object.entries(porLoja).sort((a,b)=>b[1]-a[1]);
@@ -1220,6 +1348,10 @@ async function loadResumoMensal(){
     <div class="kv"><span>Total levantamentos</span><b>${fmt(totLevBFA)} Kz</b></div>
     <div class="kv"><span>Total diferença a entregar</span><b>${fmt(totDifBFA)} Kz</b></div>
     <button class="ghost small" id="export-csv" style="margin-top:12px;">Exportar CSV do mês</button>
+    ${S.session.role==='admin' ? `
+      <div class="section-label">Fecho de mês</div>
+      <div id="fecho-mes-area"><p class="muted">A verificar…</p></div>
+    ` : ''}
   `;
   document.getElementById('export-csv').onclick = ()=>{
     let csv = 'Loja,Data,Produto,Entrada,Venda,Resto\n';
@@ -1230,6 +1362,28 @@ async function loadResumoMensal(){
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = `resumo-${month}.csv`; a.click();
   };
+  if(S.session.role==='admin'){
+    try{
+      const fechados = await api('GET','/reports/closed-months');
+      const info = fechados.find(f=>f.month===month);
+      const area = document.getElementById('fecho-mes-area');
+      if(info){
+        area.innerHTML = `<div class="banner ok">Mês fechado por ${info.closed_by} em ${new Date(info.closed_at).toLocaleDateString('pt-PT')}. Nenhum relatório deste mês pode mais ser editado.</div>`;
+      } else {
+        area.innerHTML = `
+          <p class="hint">Depois de fechado, nenhum relatório de ${month} pode voltar a ser editado, nem com aprovação. Confirma que todas as lojas já lançaram e a contabilidade já confirmou antes de fechar.</p>
+          <button class="danger small" id="fechar-mes-btn">Fechar ${month} definitivamente</button>`;
+        document.getElementById('fechar-mes-btn').onclick = async ()=>{
+          if(!confirm(`Tens a certeza? Fechar ${month} é definitivo — ninguém, nem o ADM, poderá voltar a editar relatórios desse mês.`)) return;
+          try{
+            await api('POST','/reports/close-month', {month});
+            toast('Mês fechado.');
+            loadResumoMensal();
+          }catch(e){ toast(e.message); }
+        };
+      }
+    }catch(e){ /* silencioso: fecho de mês é um extra, não bloqueia o resto do ecrã */ }
+  }
 }
 function attachResumoMensalHandlers(){
   document.getElementById('rm-month').onchange = loadResumoMensal;
