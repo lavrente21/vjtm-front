@@ -32,25 +32,13 @@ function fmt(n){
   n = Number(n)||0;
   return n.toLocaleString('pt-PT',{maximumFractionDigits:2});
 }
-
-function fmtTime(iso){
-  if(!iso) return '—';
-
-  const d = new Date(iso);
-  if(Number.isNaN(d.getTime())) return '—';
-
-  return d.toLocaleTimeString('pt-PT', {
-    hour: '2-digit',
-    minute: '2-digit'
-  });
-}
 function uid(){ return Math.random().toString(36).slice(2,10); }
 
 /* ============================================================
    CLIENTE DA API (backend Render + Supabase)
    Troca este valor pelo URL do teu serviço no Render depois do deploy.
 ============================================================ */
-const API_BASE_URL = 'https://vjtm.onrender.com';
+const API_BASE_URL = 'https://SEU-BACKEND.onrender.com';
 
 async function api(method, path, body){
   const headers = {'Content-Type':'application/json'};
@@ -177,7 +165,7 @@ function viewLogin(){
   return `
   <div class="login-wrap">
     <div class="brand">
-      <div class="mark">VJTM</div>
+      <div class="mark">Livro de Caixa</div>
       <div class="tag">Relatório diário · multi-loja · agente bancário BFA</div>
     </div>
     <div class="sheet">
@@ -193,7 +181,7 @@ function viewLogin(){
       </div>
       <div id="login-err" style="color:var(--stamp-red);font-size:12.5px;margin-bottom:10px;"></div>
       <button id="login-btn" style="width:100%;">Entrar</button>
-      <p class="small-note" style="margin-top:14px;">Acesso</p>
+      <p class="small-note" style="margin-top:14px;">Acesso demonstrativo · utilizador: <b>admin</b> · password: <b>admin123</b></p>
     </div>
   </div>`;
 }
@@ -1010,12 +998,25 @@ function viewRecibo(rep){
     ${contBloco('vendas','Vendas')}
     ${blocoEdicao}
 
-    <div style="margin-top:16px;"><button class="ghost" id="voltar-btn">Voltar</button></div>
+    <div style="margin-top:16px;display:flex;gap:10px;">
+      <button class="ghost" id="voltar-btn">Voltar</button>
+      <button class="secondary" id="copiar-link-btn">Copiar link público (WhatsApp)</button>
+    </div>
   </div>`;
 }
 function attachReciboHandlers(){
   const b = document.getElementById('voltar-btn');
   if(b) b.onclick = ()=>{ S.view = S.session.role==='funcionario'?'meus-relatorios':(S.session.role==='contabilista'?'contabilidade':'relatorios-dia'); render(); };
+  const copiarBtn = document.getElementById('copiar-link-btn');
+  if(copiarBtn) copiarBtn.onclick = async ()=>{
+    const link = `${location.origin}/recibo.html?id=${S.reciboAtual.id}`;
+    try{
+      await navigator.clipboard.writeText(link);
+      toast('Link copiado! Já podes colar no WhatsApp.');
+    }catch(e){
+      prompt('Copia este link:', link);
+    }
+  };
   document.querySelectorAll('[data-salvar-explicacao]').forEach(btn=>{
     btn.onclick = async ()=>{
       const tipo = btn.getAttribute('data-salvar-explicacao');
