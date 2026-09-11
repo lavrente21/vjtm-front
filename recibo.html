@@ -21,7 +21,7 @@
 
 <script>
 // Troca isto pelo mesmo URL do backend usado no index.html principal.
-const API_BASE_URL = 'https://vjtm.onrender.com';
+const API_BASE_URL = 'https://SEU-BACKEND.onrender.com';
 
 function fmt(n){ return Number(n||0).toLocaleString('pt-PT',{maximumFractionDigits:2}); }
 function fmtTime(iso){ if(!iso) return ''; return new Date(iso).toLocaleTimeString('pt-PT',{hour:'2-digit',minute:'2-digit'}); }
@@ -60,14 +60,14 @@ function calcProduto(p){
 }
 function bfaEntregaStatus(rep){
   const bfa = rep.bfa||{}; const entrega = rep.entregaBfa||{};
-  const aEntregar = Number(bfa.depositos||0) - Number(bfa.levantamentos||0);
+  const aEntregar = Number(bfa.depositos||0) - Number(bfa.levantamentos||0) - totalSaidasRep(rep);
   const totalEntregue = Number(entrega.cash||0)+Number(entrega.tpa||0)+Number(entrega.transferencia||0)+Number(entrega.depositoBanco||0);
   const diff = totalEntregue - aEntregar;
   return {aEntregar, totalEntregue, diff, estado: diff<0?'falta':diff>0?'mais':'ok'};
 }
 function vendasEntregaStatus(rep){
   const entrega = rep.entregaVendas||{};
-  const aEntregar = totalVendidoRep(rep) - totalSaidasRep(rep);
+  const aEntregar = totalVendidoRep(rep);
   const totalEntregue = Number(entrega.cash||0)+Number(entrega.tpa||0)+Number(entrega.transferencia||0)+Number(entrega.depositoBanco||0);
   const diff = totalEntregue - aEntregar;
   return {aEntregar, totalEntregue, diff, estado: diff<0?'falta':diff>0?'mais':'ok'};
@@ -93,20 +93,83 @@ async function carregar(){
       return;
     }
     const rep = await res.json();
+    ultimoRep = rep;
     el.innerHTML = renderRecibo(rep);
   }catch(e){
     el.innerHTML = '<div class="sheet"><div class="empty">Erro de ligação ao servidor. Tenta novamente.</div></div>';
   }
 }
 
-function renderRecibo(rep){
-  rep.produtos.forEach(calcProduto);
-  const bfaSt = bfaEntregaStatus(rep);
-  const vendasSt = vendasEntregaStatus(rep);
-  const totalVendido = totalVendidoRep(rep);
-  const totalSaidas = totalSaidasRep(rep);
-  const cont = rep.contabilidade || {bfa:{recebido:null,explicacaoFuncionario:null,depositado:null}, vendas:{recebido:null,explicacaoFuncionario:null,depositado:null}};
+let modoAtual = new URLSearchParams(location.search).get('modo') || 'final';
 
+function renderProdutosTableHtml(produtos){
+  return `
+    <div class="table-scroll"><table>
+      <thead><tr><th>Produto</th><th>Entrada</th><th>Venda</th><th>Resto</th><th>Estado</th></tr></thead>
+      <tbody>
+        ${produtos.map(p=>{
+          if(p.variantes && p.variantes.length){
+            return p.variantes.map(v=>`
+              <tr>
+                <td>${p.nome} <span class="badge">${v.denom}</span></td>
+                <td class="num-cell">${fmt(v.entradaTotal)}</td>
+                <td class="num-cell">${fmt(v.valorVendido)}</td>
+                <td class="num-cell">${fmt(v.resto)}</td>
+                <td>${(v.entradaEsperada==null)?'—':(v.diferenca===0?'<span class="stamp ok">OK</span>':v.diferenca>0?'<span class="stamp mais">A MAIS</span>':'<span class="stamp falta">EM FALTA</span>')}</td>
+              </tr>`).join('');
+          }
+          return `
+          <tr>
+            <td>${p.nome}</td>
+            <td class="num-cell">${fmt(p.entradaTotal)}</td>
+            <td class="num-cell">${fmt(p.vendaTotalValor)}</td>
+            <td class="num-cell">${fmt(p.resto)}</td>
+            <td>${p.entradaEsperada===null?'—':(p.diferenca===0?'<span class="stamp ok">OK</span>':p.diferenca>0?'<span class="stamp mais">A MAIS</span>':'<span class="stamp falta">EM FALTA</span>')}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table></div>`;
+}
+function renderEntregaDetalheHtml(titulo, aEntregarLabel, status, entrega){
+  return `
+    <div class="section-label">${titulo}</div>
+    <div class="kv"><span>${aEntregarLabel}</span><b>${fmt(status.aEntregar)} Kz</b></div>
+    <div class="kv"><span>Cash em mão</span><b>${fmt(entrega.cash)} Kz</b></div>
+    <div class="kv"><span>TPA</span><b>${fmt(entrega.tpa)} Kz</b></div>
+    <div class="kv"><span>Transferência</span><b>${fmt(entrega.transferencia)} Kz</b></div>
+    <div class="kv"><span>Depósito no banco</span><b>${fmt(entrega.depositoBanco)} Kz</b></div>
+    <div class="kv"><span><b>Total entregue</b></span><b>${fmt(status.totalEntregue)} Kz</b></div>
+    <div style="margin-top:8px;">${stampSpan(status.estado, ['CORRETO','EM FALTA','A MAIS'], status.diff)}</div>`;
+}
+function renderSaidasTableHtml(saidas){
+  if(!saidas || !saidas.length) return '<p class="muted small-note">Sem saídas registadas.</p>';
+  return `
+    <div class="table-scroll"><table>
+      <thead><tr><th>Descrição</th><th>Valor</th></tr></thead>
+      <tbody>${saidas.map(s=>`<tr><td>${s.descricao||'—'}</td><td class="num-cell">${fmt(s.valor)} Kz</td></tr>`).join('')}</tbody>
+    </table></div>`;
+}
+function renderConteudoRecibo(data, subtitulo){
+  data.produtos.forEach(calcProduto);
+  const bfaSt = bfaEntregaStatus(data);
+  const vendasSt = vendasEntregaStatus(data);
+  return `
+    ${subtitulo?`<p class="hint">${subtitulo}</p>`:''}
+    <div class="section-label">Produtos</div>
+    ${renderProdutosTableHtml(data.produtos)}
+    <div class="section-label">Saídas</div>
+    ${renderSaidasTableHtml(data.saidas)}
+    ${renderEntregaDetalheHtml('BFA', 'A entregar (Depósitos − Levantamentos − Saídas)', bfaSt, data.entregaBfa)}
+    ${renderEntregaDetalheHtml('Vendas', 'A entregar (Total vendido)', vendasSt, data.entregaVendas)}
+    <hr class="divider">
+    <div class="kv"><span>Total vendido</span><b>${fmt(totalVendidoRep(data))} Kz</b></div>
+    <div class="kv"><span>Total de saídas</span><b>${fmt(totalSaidasRep(data))} Kz</b></div>
+    ${data.obs?`<div class="section-label">Observações</div><p>${data.obs}</p>`:''}
+  `;
+}
+
+function renderRecibo(rep){
+  const cont = rep.contabilidade || {bfa:{recebido:null,explicacaoFuncionario:null,depositado:null}, vendas:{recebido:null,explicacaoFuncionario:null,depositado:null}};
   const contBloco = (tipo, titulo)=>{
     const c = cont[tipo] || {recebido:null, explicacaoFuncionario:null, depositado:null};
     return `
@@ -119,57 +182,43 @@ function renderRecibo(rep){
     `;
   };
 
-  const rows = rep.produtos.map(p=>{
-    if(p.variantes && p.variantes.length){
-      return p.variantes.map(v=>`
-        <tr>
-          <td>${p.nome} <span class="badge">${v.denom}</span></td>
-          <td class="num-cell">${fmt(v.entradaTotal)}</td>
-          <td class="num-cell">${fmt(v.valorVendido)}</td>
-          <td class="num-cell">${fmt(v.resto)}</td>
-          <td>${(v.entradaEsperada==null)?'—':(v.diferenca===0?'<span class="stamp ok">OK</span>':v.diferenca>0?'<span class="stamp mais">A MAIS</span>':'<span class="stamp falta">EM FALTA</span>')}</td>
-        </tr>`).join('');
-    }
-    return `
-      <tr>
-        <td>${p.nome}</td>
-        <td class="num-cell">${fmt(p.entradaTotal)}</td>
-        <td class="num-cell">${fmt(p.vendaTotalValor)}</td>
-        <td class="num-cell">${fmt(p.resto)}</td>
-        <td>${p.entradaEsperada===null?'—':(p.diferenca===0?'<span class="stamp ok">OK</span>':p.diferenca>0?'<span class="stamp mais">A MAIS</span>':'<span class="stamp falta">EM FALTA</span>')}</td>
-      </tr>`;
-  }).join('');
+  const temTurnos = !!(rep.turnos && rep.turnos.length);
+  const finalDisponivel = rep.status === 'enviado';
+  if(!finalDisponivel && modoAtual==='final' && temTurnos){
+    modoAtual = rep.turnos.find(t=>t.numero===2 && t.status!=='aberto') ? 'turno2' : 'turno1';
+  }
+  const seletor = !temTurnos ? '' : `
+    ${!finalDisponivel?'<div class="banner mais">Este relatório ainda está em curso — o Turno 2 ainda não fechou, por isso não há "Final" ainda.</div>':''}
+    <div class="chip-row" style="margin-bottom:10px;">
+      ${finalDisponivel?`<button class="${modoAtual==='final'?'':'ghost'} small" onclick="mudarModo('final')">Final</button>`:''}
+      <button class="${modoAtual==='turno1'?'':'ghost'} small" onclick="mudarModo('turno1')">Turno 1</button>
+      <button class="${modoAtual==='turno2'?'':'ghost'} small" onclick="mudarModo('turno2')">Turno 2</button>
+    </div>`;
+
+  let conteudo;
+  if(modoAtual==='turno1' && temTurnos){
+    const t1 = rep.turnos.find(t=>t.numero===1);
+    conteudo = renderConteudoRecibo(t1, `Turno 1 — ${t1.funcionario||'—'} · ${fmtTime(t1.horaInicio)} – ${fmtTime(t1.horaFim)}`);
+  } else if(modoAtual==='turno2' && temTurnos){
+    const t2 = rep.turnos.find(t=>t.numero===2);
+    conteudo = t2.status==='aberto' ? '<p class="empty">O Turno 2 ainda não fechou.</p>' :
+      renderConteudoRecibo(t2, `Turno 2 — ${t2.funcionario||'—'} · ${fmtTime(t2.horaInicio)} – ${fmtTime(t2.horaFim)}`);
+  } else {
+    conteudo = renderConteudoRecibo(rep, null);
+  }
 
   return `
   <div class="sheet">
     <h2>Recibo do Relatório — ${rep.store}</h2>
     <p class="hint">${rep.date} · enviado por ${rep.enviadoPor||'—'} às ${fmtTime(rep.enviadoEm)}</p>
-
-    <div class="section-label">Produtos</div>
-    <div class="table-scroll"><table>
-      <thead><tr><th>Produto</th><th>Entrada</th><th>Venda</th><th>Resto</th><th>Estado</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table></div>
-
-    <div class="section-label">BFA</div>
-    <div class="kv"><span>A entregar (Depósitos − Levantamentos)</span><b>${fmt(bfaSt.aEntregar)} Kz</b></div>
-    <div class="kv"><span>Total entregue</span><b>${fmt(bfaSt.totalEntregue)} Kz</b></div>
-    <div style="margin-top:8px;">${stampSpan(bfaSt.estado, ['CORRETO','EM FALTA','A MAIS'], bfaSt.diff)}</div>
-
-    <div class="section-label">Vendas</div>
-    <div class="kv"><span>A entregar (Total vendido − Saídas)</span><b>${fmt(vendasSt.aEntregar)} Kz</b></div>
-    <div class="kv"><span>Total entregue</span><b>${fmt(vendasSt.totalEntregue)} Kz</b></div>
-    <div style="margin-top:8px;">${stampSpan(vendasSt.estado, ['CORRETO','EM FALTA','A MAIS'], vendasSt.diff)}</div>
-
-    <hr class="divider">
-    <div class="kv"><span>Total vendido</span><b>${fmt(totalVendido)} Kz</b></div>
-    <div class="kv"><span>Total de saídas</span><b>${fmt(totalSaidas)} Kz</b></div>
-    ${rep.obs?`<div class="section-label">Observações</div><p>${rep.obs}</p>`:''}
-
+    ${seletor}
+    ${conteudo}
     ${contBloco('bfa','BFA')}
     ${contBloco('vendas','Vendas')}
   </div>`;
 }
+let ultimoRep = null;
+function mudarModo(modo){ modoAtual = modo; document.getElementById('conteudo').innerHTML = renderRecibo(ultimoRep); }
 
 carregar();
 </script>
