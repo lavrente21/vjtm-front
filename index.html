@@ -906,9 +906,12 @@ function attachMeusRelatoriosHandlers(){
     el.innerHTML = `
       <div class="store-card">
         <div class="head"><span class="name">${date}</span><span class="badge">${rep.status==='enviado'?'Enviado':'Rascunho'}</span></div>
-        <button class="ghost small" id="ver-recibo">Ver recibo do relatório</button>
+        ${rep.status==='enviado'
+          ? '<button class="ghost small" id="ver-recibo">Ver recibo do relatório</button>'
+          : '<p class="muted small-note">Este dia ainda está em curso (turnos por fechar) — o recibo só fica disponível depois de o relatório final ser enviado.</p>'}
       </div>`;
-    document.getElementById('ver-recibo').onclick = ()=>{ S.reciboAtual = rep; S.reciboModo='final'; S.view='recibo'; render(); };
+    const verBtn = document.getElementById('ver-recibo');
+    if(verBtn) verBtn.onclick = ()=>{ S.reciboAtual = rep; S.reciboModo='final'; S.view='recibo'; render(); };
   };
   document.getElementById('mr-date').onchange = load;
   load();
@@ -1011,7 +1014,7 @@ function viewRecibo(rep){
   const podeEditar = dentroJanelaLivre || !!pedidoAprovadoAtivo;
   const pedidoPendente = (rep.pedidosEdicao||[]).find(p=>p.status==='pendente');
 
-  const blocoEdicao = (S.session.role!=='funcionario') ? '' : contConfirmada ? '' : `
+  const blocoEdicao = (S.session.role!=='funcionario' || rep.status!=='enviado' || !rep.id) ? '' : contConfirmada ? '' : `
     <div class="section-label">Editar este relatório</div>
     ${podeEditar ? `
       <div class="banner ok">${dentroJanelaLivre?'Ainda estás dentro dos 15 min livres para corrigir.':'Edição aprovada — tens mais 15 min.'}</div>
