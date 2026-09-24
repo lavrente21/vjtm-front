@@ -303,7 +303,16 @@ function viewShell(){
 function attachShellHandlers(){
   document.getElementById('logout-link').onclick = doLogout;
   document.querySelectorAll('.tab').forEach(t=>{
-    t.onclick = ()=>{ S.view = t.getAttribute('data-tab'); render(); };
+    t.onclick = ()=>{
+      const tab = t.getAttribute('data-tab');
+      if(tab==='novo-relatorio' && S.selectedDate!==todayStr()){
+        // ao clicar no separador normal, volta sempre para o dia de hoje —
+        // só o botão "Continuar a preencher este dia" deve abrir um dia atrasado
+        S.selectedDate = todayStr();
+        S.draftReport = null;
+      }
+      S.view = tab; render();
+    };
   });
   attachViewHandlers();
 }
@@ -908,10 +917,18 @@ function attachMeusRelatoriosHandlers(){
         <div class="head"><span class="name">${date}</span><span class="badge">${rep.status==='enviado'?'Enviado':'Rascunho'}</span></div>
         ${rep.status==='enviado'
           ? '<button class="ghost small" id="ver-recibo">Ver recibo do relatório</button>'
-          : '<p class="muted small-note">Este dia ainda está em curso (turnos por fechar) — o recibo só fica disponível depois de o relatório final ser enviado.</p>'}
+          : `<p class="muted small-note">Este dia ainda está em curso (turnos por fechar).</p>
+             <button class="secondary small" id="continuar-dia">Continuar a preencher este dia</button>`}
       </div>`;
     const verBtn = document.getElementById('ver-recibo');
     if(verBtn) verBtn.onclick = ()=>{ S.reciboAtual = rep; S.reciboModo='final'; S.view='recibo'; render(); };
+    const continuarBtn = document.getElementById('continuar-dia');
+    if(continuarBtn) continuarBtn.onclick = ()=>{
+      S.selectedDate = date;
+      S.draftReport = null; // força a ir buscar o rascunho deste dia outra vez
+      S.view = 'novo-relatorio';
+      render();
+    };
   };
   document.getElementById('mr-date').onchange = load;
   load();
@@ -1519,17 +1536,40 @@ async function loadResumoMensal(){
   const reps = await listReportsForMonth(month);
   if(!reps.length){ document.getElementById('rm-body').innerHTML='<div class="empty">Sem relatórios neste mês.</div>'; return; }
 
-  // totais por produto
-  const porProduto = {}; // nome -> {venda, entrada}
+  // totais por produto — Entrada = só material genuinamente novo no mês
+  // (reforços + entrada do primeiro dia de cada produto, nunca o que só
+  // transitou de dia para dia); Resto = stock real no último relatório do
+  // mês de cada loja, somado entre lojas. Também guardamos o tipo/unidade de
+  // cada produto, para os produtos por quantidade (não-Kz) não aparecerem
+  // com "Kz" a mais — só a Venda é sempre em Kz (é sempre dinheiro).
+  const porProduto = {}; // nome -> {venda, entradaNova, tipo, unidade}
+  const restoPorStoreProduto = {}; // "loja|produto" -> {date, resto}
   const porLoja = {};
   const porDia = {};
   let totDepBFA=0, totLevBFA=0, totDifBFA=0;
   let totEntregueBfa=0, totEntregueVendas=0, totSaidasGeral=0;
+
+  function registarLinha(nome, tipo, unidade, storeKey, entradaEsperada, entradaInformada, reforcos, vendaValor, resto, rep){
+    const reforcoTotal = (reforcos||[]).reduce((a,r)=>a+Number(r.valor||0),0);
+    const entradaNova = reforcoTotal + ((entradaEsperada===null||entradaEsperada===undefined) ? Number(entradaInformada||0) : 0);
+    if(!porProduto[nome]) porProduto[nome] = {venda:0, entradaNova:0, tipo, unidade};
+    porProduto[nome].venda += Number(vendaValor||0);
+    porProduto[nome].entradaNova += entradaNova;
+    const key = storeKey+'|'+nome;
+    if(!restoPorStoreProduto[key] || rep.date > restoPorStoreProduto[key].date){
+      restoPorStoreProduto[key] = {date: rep.date, resto: Number(resto||0)};
+    }
+  }
+
   reps.forEach(rep=>{
     rep.produtos.forEach(p=>{ calcProduto(p);
-      if(!porProduto[p.nome]) porProduto[p.nome] = {venda:0, entrada:0};
-      porProduto[p.nome].venda += Number(p.vendaTotalValor||0);
-      porProduto[p.nome].entrada += Number(p.entradaTotal||0);
+      if(p.variantes && p.variantes.length){
+        p.variantes.forEach(v=>{
+          registarLinha(`${p.nome} (${v.denom})`, p.tipo, p.unidade, rep.store, v.entradaEsperada, v.entradaInformada, v.reforcos, v.valorVendido, v.resto, rep);
+        });
+      } else {
+        registarLinha(p.nome, p.tipo, p.unidade, rep.store, p.entradaEsperada, p.entradaInformada, p.reforcos, p.vendaTotalValor, p.resto, rep);
+      }
     });
     const totalVendido = rep.produtos.reduce((a,p)=>a+Number(p.vendaTotalValor||0),0);
     porLoja[rep.store] = (porLoja[rep.store]||0) + totalVendido;
@@ -1543,6 +1583,14 @@ async function loadResumoMensal(){
     totEntregueVendas += vendasSt.totalEntregue;
     totSaidasGeral += totalSaidasRep(rep);
   });
+
+  // soma o resto (já é "último dia por loja") entre todas as lojas, por produto
+  const restoPorProduto = {};
+  Object.entries(restoPorStoreProduto).forEach(([key, {resto}])=>{
+    const nome = key.split('|').slice(1).join('|');
+    restoPorProduto[nome] = (restoPorProduto[nome]||0) + resto;
+  });
+
   const rankingProdutos = Object.entries(porProduto).sort((a,b)=>b[1].venda-a[1].venda);
   const rankingLojas = Object.entries(porLoja).sort((a,b)=>b[1]-a[1]);
   const dias = Object.keys(porDia).sort();
@@ -1559,16 +1607,25 @@ async function loadResumoMensal(){
       ${dias.map(d=>`<div style="width:26px;text-align:center;">${d.slice(8,10)}</div>`).join('')}
     </div>`;
 
+  // Unidade de exibição: produtos "saldo" mostram sempre Kz; produtos
+  // "fisico" mostram a unidade própria do produto (unidades, cartão, chip…)
+  // na Entrada/Resto — a Venda é sempre Kz, porque é sempre dinheiro.
+  const unidadeExibicao = (tipo, unidade) => tipo==='saldo' ? 'Kz' : (unidade||'unid.');
+
   document.getElementById('rm-body').innerHTML = `
     <div class="section-label">Vendas diárias — ${month}</div>
     ${barChart}
-    <div class="kv"><span>Total vendido no mês</span><b>${fmt(rankingLojas.reduce((a,[,v])=>a+v,0))} Kz</b></div>
-    <div class="kv"><span>Total de saídas no mês</span><b>${fmt(totSaidasGeral)} Kz</b></div>
+    <div class="kv"><span><b>Valor geral vendido</b></span><b>${fmt(rankingLojas.reduce((a,[,v])=>a+v,0))} Kz</b></div>
+    <div class="kv"><span><b>Despesas efetuadas</b></span><b>${fmt(totSaidasGeral)} Kz</b></div>
     <div class="kv"><span>Total entregue (BFA)</span><b>${fmt(totEntregueBfa)} Kz</b></div>
     <div class="kv"><span>Total entregue (Vendas)</span><b>${fmt(totEntregueVendas)} Kz</b></div>
-    <div class="section-label">Resumo por produto (entrada e venda do mês)</div>
-    <div class="table-scroll"><table><thead><tr><th>Produto</th><th>Entrada total</th><th>Venda total</th></tr></thead>
-      <tbody>${rankingProdutos.map(([n,v])=>`<tr><td>${n}</td><td class="num-cell">${fmt(v.entrada)} Kz</td><td class="num-cell">${fmt(v.venda)} Kz</td></tr>`).join('')}</tbody>
+    <div class="section-label">Resumo por produto — mês inteiro</div>
+    <p class="hint">Entrada = só material novo (reforços) chegado no mês. Resto = stock real no último relatório do mês de cada loja. A Venda é sempre em Kz; a Entrada e o Resto vêm na unidade própria do produto (Kz para saldo/recarga, unidades para produtos físicos).</p>
+    <div class="table-scroll"><table><thead><tr><th>Produto</th><th>Entrada de material</th><th>Vendas efetuadas</th><th>Produto que restou</th></tr></thead>
+      <tbody>${rankingProdutos.map(([n,v])=>{
+        const u = unidadeExibicao(v.tipo, v.unidade);
+        return `<tr><td>${n}</td><td class="num-cell">${fmt(v.entradaNova)} ${u}</td><td class="num-cell">${fmt(v.venda)} Kz</td><td class="num-cell">${fmt(restoPorProduto[n]||0)} ${u}</td></tr>`;
+      }).join('')}</tbody>
     </table></div>
     <div class="section-label">Comparação entre lojas</div>
     <div class="table-scroll"><table><thead><tr><th>Loja</th><th>Total vendido no mês</th></tr></thead>
@@ -1585,9 +1642,9 @@ async function loadResumoMensal(){
     ` : ''}
   `;
   document.getElementById('export-csv').onclick = ()=>{
-    let csv = 'Loja,Data,Produto,Entrada,Venda,Resto\n';
+    let csv = 'Loja,Data,Produto,Tipo,Unidade,Entrada,Venda,Resto\n';
     reps.forEach(rep=>rep.produtos.forEach(p=>{
-      csv += `${rep.store},${rep.date},${p.nome},${p.entradaTotal},${p.vendaTotalValor},${p.resto}\n`;
+      csv += `${rep.store},${rep.date},${p.nome},${p.tipo},${p.unidade},${p.entradaTotal},${p.vendaTotalValor},${p.resto}\n`;
     }));
     const blob = new Blob([csv],{type:'text/csv'});
     const a = document.createElement('a');
